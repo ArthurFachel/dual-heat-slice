@@ -30,7 +30,7 @@ try:
     from .train import (
         HF_TOKEN, MODEL_NAME,
         build_tokenizer, load_base_model,
-        load_model_with_adapters, load_sapt_model,
+        load_model_with_adapters,
     )
 except ImportError:
     from eval import evaluate_all
@@ -40,7 +40,7 @@ except ImportError:
     from train import (  # type: ignore[no-redef]
         HF_TOKEN, MODEL_NAME,
         build_tokenizer, load_base_model,
-        load_model_with_adapters, load_sapt_model,
+        load_model_with_adapters,
     )
 
 
@@ -151,25 +151,8 @@ def run_eval_from_manifest(
         print(f"Loading base model from: {abs_base}")
         tokenizer = build_tokenizer(model_name=abs_base, hf_token=HF_TOKEN)
 
-        # SAPT eval path: load every adapter as a parallel named adapter and
-        # wrap with SAPTWrapper so generation routes through the attention
-        # router. Selected when the manifest declares cl_method=sapt and a
-        # router checkpoint is present; otherwise fall back to the
-        # sequential-merge reconstruction.
-        manifest_cl_method = str(manifest.get("cl_method", "vanilla")).lower()
-        sapt_router_path = manifest.get("sapt_router_path")
-        if manifest_cl_method == "sapt" and sapt_router_path:
-            sapt_router_abs = str(Path(sapt_router_path).resolve())
-            if not Path(sapt_router_abs).is_file():
-                raise FileNotFoundError(
-                    f"SAPT router checkpoint not found at '{sapt_router_abs}'. "
-                    "Ensure cl_state/sapt/router.pt was transferred."
-                )
-            print(f"SAPT eval: loading {len(resolved_adapter_paths)} parallel adapter(s) + router {sapt_router_abs}")
-            model = load_sapt_model(abs_base, resolved_adapter_paths, sapt_router_abs)
-        else:
-            print(f"Merging {len(resolved_adapter_paths)} adapter(s): {resolved_adapter_paths}")
-            model = load_model_with_adapters(abs_base, resolved_adapter_paths)
+        print(f"Merging {len(resolved_adapter_paths)} adapter(s): {resolved_adapter_paths}")
+        model = load_model_with_adapters(abs_base, resolved_adapter_paths)
     else:
         # Legacy format: single merged-model checkpoint.
         resolved_model_path: str = _get("model_path", model_path)
@@ -317,6 +300,9 @@ def main() -> None:
         help="Path to the run output directory (contains stages/ sub-directory).",
     )
     run_p.add_argument("--skip-general-eval", action="store_true", default=None)
+    run_p.add_argument("--force", action="store_true", default=False,
+                       help="Re-evaluate every stage even if its stage_record.json "
+                            "already has task scores/benchmarks (ignores skip logic).")
     run_p.add_argument("--general-eval-all-stages", action="store_true", default=False,
                        help="Run benchmark eval (GP/IP) at every stage, not just the final one.")
     run_p.add_argument("--quick-eval", action="store_true", default=None)
@@ -388,20 +374,32 @@ def main() -> None:
                 print(f"Skipping {sd} (no eval_manifest.json)")
                 continue
             is_final = sd == final_stage
-            if (sd / "stage_record.json").exists():
-                if not is_final:
-                    print(f"Skipping {sd.name} (stage_record.json already exists)")
-                    continue
-                # For the final stage, only skip if benchmarks were already run.
+            if args.force and (sd / "stage_record.json").exists():
+                print(f"Re-running {sd.name} (--force)")
+            elif (sd / "stage_record.json").exists():
+                # The orchestrator writes stage_record.json at train time with only
+                # train_report (seen_tasks empty, no benchmarks). Don't treat mere
+                # existence as "done": skip a stage only once it actually has the
+                # eval scores we need (task scores feed AP/FP; benchmarks feed GP/IP).
                 try:
-                    import json as _json
-                    sr = _json.loads((sd / "stage_record.json").read_text())
-                    if sr.get("general") and sr["general"].get("gp"):
-                        print(f"Skipping {sd.name} (stage_record.json with benchmarks already exists)")
-                        continue
+                    sr = _read_json(sd / "stage_record.json")
                 except Exception:
-                    pass
-                print(f"Re-running {sd.name} (final stage — benchmarks missing)")
+                    sr = {}
+                has_task_scores = bool(sr.get("seen_tasks"))
+                has_benchmarks = bool((sr.get("general") or {}).get("gp"))
+                if not is_final:
+                    if has_task_scores:
+                        print(f"Skipping {sd.name} (task scores already present)")
+                        continue
+                    print(f"Re-running {sd.name} (task scores missing)")
+                else:
+                    # Final stage also needs benchmarks (GP/IP) unless skipped.
+                    if has_task_scores and (has_benchmarks or skip_general):
+                        print(f"Skipping {sd.name} (stage_record.json with task scores"
+                              f"{'' if skip_general else ' and benchmarks'} already exists)")
+                        continue
+                    print(f"Re-running {sd.name} (final stage — "
+                          f"{'task scores' if not has_task_scores else 'benchmarks'} missing)")
             skip_general_this_stage = skip_general
             if final_only and not is_final:
                 skip_general_this_stage = True

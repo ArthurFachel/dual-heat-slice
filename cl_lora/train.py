@@ -24,13 +24,13 @@ import logging
 
 try:
     from .cl_methods import CLMethod, VanillaCLMethod
-    from .load_dataset import load_training_dataset
+    from .load_dataset import configure_prompt_tokenizer, load_training_dataset
     from .lora_config import build_lora_config
     from .repro import set_global_seed
     from .slice import SliceInitConfig, initialize_lora_with_slice
 except ImportError:
     from cl_methods import CLMethod, VanillaCLMethod  # type: ignore[no-redef]
-    from load_dataset import load_training_dataset
+    from load_dataset import configure_prompt_tokenizer, load_training_dataset  # type: ignore[no-redef]
     from lora_config import build_lora_config
     from repro import set_global_seed
     from slice import SliceInitConfig, initialize_lora_with_slice  # type: ignore[no-redef]
@@ -54,7 +54,8 @@ _patch_accelerate_unwrap_model_compat()
 
 load_dotenv()
 
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
+# MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 # MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 HF_TOKEN = os.getenv("HUGGING_TOKEN")
 
@@ -65,6 +66,9 @@ def build_tokenizer(model_name: str = MODEL_NAME, hf_token: str | None = HF_TOKE
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
+    # Render prompts/targets with this model's native chat template (and its real
+    # EOS) for every downstream load_training_dataset call in this process.
+    configure_prompt_tokenizer(tokenizer)
     return tokenizer
 
 
@@ -99,53 +103,6 @@ def _tokenize_dataset(dataset, tokenizer, max_length: int):
         lambda ex: tokenizer(ex["text"], truncation=True, max_length=max_length),
         remove_columns=dataset.column_names,
     )
-
-
-def _setup_peft_for_sapt(model, lora_cfg, adapter_name: str):
-    """Prepare a PEFT model for SAPT stage training.
-
-    If the input model is a fresh base, wrap it with a named adapter
-    (`adapter_name`). If it is already a PEFT model from a previous SAPT
-    stage, append a new named adapter and make only it trainable.
-    """
-    from peft import PeftModel, get_peft_model
-
-    if isinstance(model, PeftModel):
-        # Already wrapped: add the new adapter and activate only it.
-        try:
-            model.add_adapter(adapter_name, lora_cfg)
-        except ValueError:
-            # adapter_name already present (e.g. on resume) — recover by
-            # selecting it; weights will be re-initialized by slice/init below.
-            pass
-        # Freeze all loaded adapters' params, then set the new one trainable.
-        from peft.tuners.lora import Linear as LoraLinear
-
-        for _, mod in model.named_modules():
-            if not isinstance(mod, LoraLinear):
-                continue
-            for name in list(mod.lora_A.keys()):
-                mod.lora_A[name].weight.requires_grad_(name == adapter_name)
-            for name in list(mod.lora_B.keys()):
-                mod.lora_B[name].weight.requires_grad_(name == adapter_name)
-        model.set_adapter(adapter_name)
-        return model, adapter_name
-
-    # Fresh base: build a PEFT model with the adapter named explicitly.
-    try:
-        wrapped = get_peft_model(model, lora_cfg, adapter_name=adapter_name)
-    except TypeError:
-        # Older PEFT versions: get_peft_model has no adapter_name kwarg.
-        # Create with default name then rename via add+delete.
-        wrapped = get_peft_model(model, lora_cfg)
-        if adapter_name != "default":
-            wrapped.add_adapter(adapter_name, lora_cfg)
-            wrapped.set_adapter(adapter_name)
-            try:
-                wrapped.delete_adapter("default")
-            except Exception:
-                pass
-    return wrapped, adapter_name
 
 
 class _CLAuxLossTrainer(Trainer):
@@ -202,51 +159,6 @@ def _apply_init_absorption(peft_model, init_correction: dict) -> None:
         base_weight.data.copy_(
             (base_weight.data.to(torch.float32) - offset).to(orig_dtype)
         )
-
-
-def load_sapt_model(
-    base_model_path: str,
-    adapter_paths: List[str],
-    router_path: str,
-    *,
-    hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "auto",
-):
-    """Load base + every stage adapter as parallel named adapters and wrap in SAPT.
-
-    Returns a `SAPTWrapper` ready for `evaluate_all` (drop-in for an
-    `nn.Module` exposing `forward`/`generate`). Adapter naming convention
-    is "task_NN" for the i-th path (1-based) — matching what
-    `SAPTMethod.adapter_name_for_stage` produces during training.
-    """
-    from peft import PeftModel
-
-    from .sapt import SAPTRouter, SAPTWrapper
-
-    base = load_base_model(
-        base_model_path, hf_token=hf_token, torch_dtype=torch_dtype, device_map=device_map
-    )
-    if not adapter_paths:
-        raise ValueError("load_sapt_model requires at least one adapter path.")
-
-    adapter_names: List[str] = []
-    peft_model = None
-    for i, ap in enumerate(adapter_paths):
-        name = f"task_{i + 1:02d}"
-        adapter_names.append(name)
-        # PEFT saves named adapters to {path}/{adapter_name}/ when using
-        # selected_adapters. Resolve that subdirectory when present.
-        named_subdir = Path(ap) / name
-        if named_subdir.is_dir() and (named_subdir / "adapter_config.json").exists():
-            ap = str(named_subdir)
-        if peft_model is None:
-            peft_model = PeftModel.from_pretrained(base, ap, adapter_name=name)
-        else:
-            peft_model.load_adapter(ap, adapter_name=name)
-
-    router = SAPTRouter.load_from_path(router_path)
-    return SAPTWrapper(peft_model, router, adapter_names)
 
 
 def load_model_with_adapters(
@@ -341,6 +253,7 @@ def train_on_task(
     lora_alpha: int = 2,
     learning_rate: float = 1e-4,
     num_train_epochs: float = 3.0,
+    warmup_ratio: float = 0.01,
     per_device_train_batch_size: int = 16,
     per_device_eval_batch_size: int = 8,
     gradient_accumulation_steps: int = 2,
@@ -381,19 +294,8 @@ def train_on_task(
     slice_svd_selection: str = "lora_ga",
     cl_method: CLMethod | None = None,
     stage_idx: int = 1,
-    sapt_mode: bool = False,
-    sapt_adapter_name: str | None = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Train a fresh LoRA adapter on one task.
-
-    In standard mode (sapt_mode=False) the adapter is named ``"default"``,
-    trained, then merged into base via ``merge_and_unload``; the returned
-    object is the merged ``nn.Module``.
-
-    In SAPT mode (sapt_mode=True) the input model is a PEFT model that may
-    already carry adapters from previous stages. A new adapter named
-    ``sapt_adapter_name`` is added, only it is trained, and the function
-    returns the *un-merged* PEFT model with all adapters live in parallel.
 
     Returns:
         (model_after_stage, training_report)
@@ -404,15 +306,11 @@ def train_on_task(
     eval_dataset = _tokenize_dataset(eval_dataset, tokenizer=tokenizer, max_length=max_seq_length)
 
     lora_cfg = build_lora_config(r=rank, lora_alpha=lora_alpha)
-    if sapt_mode:
-        if not sapt_adapter_name:
-            raise ValueError("sapt_mode=True requires a non-empty sapt_adapter_name.")
-        lora_model, active_adapter = _setup_peft_for_sapt(model, lora_cfg, sapt_adapter_name)
-    else:
-        lora_model = get_peft_model(model, lora_cfg)
-        active_adapter = "default"
+    lora_model = get_peft_model(model, lora_cfg)
+    active_adapter = "default"
     lora_model.print_trainable_parameters()
 
+    slice_projection_summary: dict | None = None
     if slice_enabled:
         model_id = (
             getattr(getattr(model, "config", None), "_name_or_path", None)
@@ -447,7 +345,6 @@ def train_on_task(
             nullspace_rank=slice_nullspace_rank,
             nullspace_sv_threshold=slice_nullspace_sv_threshold,
             svd_selection=slice_svd_selection,
-            skip_absorption=bool(sapt_mode),
         )
         # propagate PEFT lora settings into slice config when available
         try:
@@ -455,7 +352,7 @@ def train_on_task(
         except Exception:
             pass
         logger = logging.getLogger("cl_lora.train.slice")
-        num_written = initialize_lora_with_slice(
+        num_written, slice_projection_summary = initialize_lora_with_slice(
             model=lora_model,
             tokenizer=tokenizer,
             current_task=task,
@@ -464,32 +361,25 @@ def train_on_task(
             adapter_name=active_adapter,
         )
         logger.info(
-            "Slice init applied: num_modules_written=%d adapter=%s skip_absorption=%s",
-            int(num_written), active_adapter, bool(sapt_mode),
+            "Slice init applied: num_modules_written=%d adapter=%s",
+            int(num_written), active_adapter,
         )
 
-        # Capture A/B at init time so load_model_with_adapters can replay
-        # the absorption step. Skipped under SAPT — there is no absorption
-        # (skip_absorption=True), so no replay is needed at eval time.
         from peft.tuners.lora import Linear as LoraLinear
-        if sapt_mode:
-            lora_init_correction: dict = {}
-        else:
-            lora_init_correction = {
-                name: {
-                    "A": mod.lora_A[active_adapter].weight.detach().cpu().clone(),
-                    "B": mod.lora_B[active_adapter].weight.detach().cpu().clone(),
-                }
-                for name, mod in lora_model.named_modules()
-                if isinstance(mod, LoraLinear) and active_adapter in getattr(mod, "lora_A", {})
+        lora_init_correction = {
+            name: {
+                "A": mod.lora_A[active_adapter].weight.detach().cpu().clone(),
+                "B": mod.lora_B[active_adapter].weight.detach().cpu().clone(),
             }
+            for name, mod in lora_model.named_modules()
+            if isinstance(mod, LoraLinear) and active_adapter in getattr(mod, "lora_A", {})
+        }
     else:
         lora_init_correction = {}
 
     # CL-method pre-training hook (fires AFTER init_correction capture so
     # absorption replay at eval time still reflects the actual A_init/B_init
-    # used to modify the base weights). Methods like InfLoRA mutate A here;
-    # methods like O-LoRA/vanilla are no-ops.
+    # used to modify the base weights).
     cl_method = cl_method or VanillaCLMethod()
     cl_method.pre_train(
         lora_model,
@@ -512,7 +402,7 @@ def train_on_task(
         logging_steps=logging_steps,
         save_strategy="steps" if save_intermediate_checkpoints else "no",
         save_steps=save_steps,
-        warmup_ratio=0.01,
+        warmup_ratio=warmup_ratio,
         save_total_limit=2 if save_intermediate_checkpoints else None,
         eval_strategy="steps",
         eval_steps=eval_steps,
@@ -538,8 +428,8 @@ def train_on_task(
     eval_metrics = trainer.evaluate()
     ba_norms_final = _compute_lora_ba_norms(lora_model, lora_alpha=float(lora_alpha), rank=int(rank))
 
-    # CL-method post-training hook (e.g. snapshot O-LoRA A's, accumulate
-    # InfLoRA covariance). Runs on the still-LoRA-wrapped model BEFORE merge.
+    # CL-method post-training hook (e.g. snapshot O-LoRA A's).
+    # Runs on the still-LoRA-wrapped model BEFORE merge.
     try:
         cl_device = next(lora_model.parameters()).device
     except StopIteration:
@@ -554,10 +444,6 @@ def train_on_task(
     )
 
     save_kwargs: Dict[str, Any] = {}
-    if sapt_mode:
-        # Save only the just-trained adapter so the directory is
-        # round-trippable with `model.load_adapter(path, adapter_name=...)`.
-        save_kwargs["selected_adapters"] = [active_adapter]
     if save_adapter:
         lora_model.save_pretrained(str(output_path / "adapter"), **save_kwargs)
         if lora_init_correction:
@@ -570,12 +456,8 @@ def train_on_task(
         if lora_init_correction:
             torch.save(lora_init_correction, adapter_cp / "init_correction.pt")
 
-    if sapt_mode:
-        # SAPT: do NOT merge — keep parallel adapters live for routing.
-        post_stage_model = lora_model
-    else:
-        merge_fn = getattr(lora_model, "merge_and_unload", None)
-        post_stage_model = merge_fn() if callable(merge_fn) else lora_model
+    merge_fn = getattr(lora_model, "merge_and_unload", None)
+    post_stage_model = merge_fn() if callable(merge_fn) else lora_model
     trainer.save_state()
 
     def _maybe_to_dict(obj: Any) -> Any:
@@ -616,6 +498,7 @@ def train_on_task(
             "rank": int(rank),
             "use_rslora": True,
         },
+        "slice_projection": slice_projection_summary,
         "output_dir": str(output_path),
         "configs": {
             "seed": int(seed),
