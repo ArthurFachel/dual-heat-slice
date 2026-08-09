@@ -71,10 +71,32 @@ QWEN_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 def load_qwen_model(
     model_name: str = QWEN_MODEL,
-    torch_dtype: torch.dtype = torch.bfloat16,
+    torch_dtype: torch.dtype = None,
     device_map: str = "auto",
 ):
-    """Load Qwen model with optional flash attention."""
+    """Load Qwen model with auto-detected dtype.
+
+    Pascal GPUs (GTX 1080 Ti, Titan Xp) don't support bf16 natively.
+    Auto-selects fp16 on Pascal, bf16 on Volta+.
+    """
+    if torch_dtype is None:
+        import torch.cuda as cu
+        # Check compute capability: < 7.0 = Pascal or older
+        if cu.is_available():
+            cc = cu.get_device_capability(0)  # (major, minor)
+            major = cc[0]
+        else:
+            major = 99  # CPU fallback
+        if major < 7:
+            torch_dtype = torch.float16
+            print(f"[load_qwen_model] GPU CC={major}.x → using float16")
+        elif major < 8:
+            torch_dtype = torch.bfloat16
+            print(f"[load_qwen_model] GPU CC={major}.x → using bfloat16")
+        else:
+            torch_dtype = torch.bfloat16
+            print(f"[load_qwen_model] GPU CC={major}.x → using bfloat16")
+
     kwargs = dict(
         torch_dtype=torch_dtype,
         device_map=device_map,
@@ -131,29 +153,26 @@ def evaluate_task(
     max_new_tokens: int = 8,
     batch_size: int = 8,
 ) -> Dict[str, Any]:
-    """Evaluate model accuracy on one task."""
+    """Evaluate model accuracy on one task.
+
+    Uses the eval split's 'prompt' and 'target' columns (set by
+    build_qwen_dataset).  Accuracy = exact match of the generated
+    label (lowercased, stripped) against the ground-truth label.
+    """
     model.eval()
     device = next(model.parameters()).device
 
     correct = 0
     total = 0
 
-    prompts = [make_prompt(text, task.domain) for text, _ in task.data]
-    targets = [label for _, label in task.data]
-
-    # Only evaluate on the eval split
-    # Since we used seed-based split, we need to find which indices are in eval
-    # For simplicity, just evaluate on a subset
-    eval_texts = [prompts[i] for i in range(len(prompts))]
-    eval_targets = [targets[i] for i in range(len(targets))]
-
-    # Use the eval dataset indices
-    indices = list(range(len(eval_dataset)))
+    prompts = list(eval_dataset["prompt"])
+    targets = list(eval_dataset["target"])
+    indices = list(range(len(prompts)))
 
     for start in range(0, len(indices), batch_size):
-        batch_indices = indices[start:start + batch_size]
-        batch_prompts = [prompts[i] for i in batch_indices]
-        batch_targets = [targets[i] for i in batch_indices]
+        batch_idx = indices[start:start + batch_size]
+        batch_prompts = [prompts[i] for i in batch_idx]
+        batch_targets = [targets[i] for i in batch_idx]
 
         # Left padding for generation
         prev_side = tokenizer.padding_side
@@ -167,12 +186,17 @@ def evaluate_task(
         ).to(device)
         tokenizer.padding_side = prev_side
 
-        outputs = model.generate(
-            **encoded,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        # Use fp16 autocast if available and model dtype is fp16
+        model_dtype = next(model.parameters()).dtype
+        autocast_dtype = model_dtype if model_dtype in (torch.float16, torch.bfloat16) else None
+
+        with torch.amp.autocast("cuda", enabled=autocast_dtype is not None, dtype=autocast_dtype):
+            outputs = model.generate(
+                **encoded,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.pad_token_id,
+            )
 
         input_len = encoded["input_ids"].shape[1]
         for i, target in enumerate(batch_targets):
@@ -236,6 +260,14 @@ def train_one_task(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    # Training args — use fp16 on Pascal (CC < 7.0), bf16 on Volta+
+    import torch.cuda as cu
+    if cu.is_available():
+        gpu_major = cu.get_device_capability(0)[0]
+        use_fp16 = gpu_major < 7
+    else:
+        use_fp16 = False
+
     training_args = TrainingArguments(
         output_dir=str(output_path),
         per_device_train_batch_size=per_device_batch_size,
@@ -246,7 +278,8 @@ def train_one_task(
         logging_steps=logging_steps,
         eval_strategy="no",
         save_strategy="no",
-        bf16=True,
+        bf16=not use_fp16,
+        fp16=use_fp16,
         report_to="none",
         remove_unused_columns=True,
         seed=seed,

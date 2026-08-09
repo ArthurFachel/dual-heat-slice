@@ -251,7 +251,10 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2) 
     """Build train/eval datasets for a Qwen task.
 
     Returns (train_dataset, eval_dataset) as HuggingFace Datasets.
-    Each example has 'text' (prompt + label) for causal LM training.
+    Each example has:
+      - 'text' (prompt + label for causal LM training)
+      - 'prompt' (prompt only, for evaluation)
+      - 'target' (label only, for evaluation)
     """
     rng = random.Random(seed)
     indexes = list(range(len(task.data)))
@@ -263,12 +266,14 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2) 
 
     def _build(ids):
         texts = []
+        prompts = []
         targets = []
         for i in ids:
             text, label = task.data[i]
             prompt = make_prompt(text, task.domain)
             texts.append(prompt + " " + label)
+            prompts.append(prompt)
             targets.append(label)
-        return Dataset.from_dict({"text": texts, "target": targets})
+        return Dataset.from_dict({"text": texts, "prompt": prompts, "target": targets})
 
     return _build(train_idx), _build(eval_idx)
