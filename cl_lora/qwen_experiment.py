@@ -72,42 +72,40 @@ QWEN_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 def load_qwen_model(
     model_name: str = QWEN_MODEL,
     torch_dtype: torch.dtype = None,
-    device_map: str = "auto",
+    device_map: str = None,
 ):
     """Load Qwen model with auto-detected dtype.
 
     Pascal GPUs (GTX 1080 Ti, Titan Xp) don't support bf16 natively.
-    Auto-selects fp16 on Pascal, bf16 on Volta+.
+    Auto-selects fp16 on Pascal, bf16 on Volta+.  No device_map by default
+    (HF Trainer manages device placement for DDP).
     """
     if torch_dtype is None:
         import torch.cuda as cu
-        # Check compute capability: < 7.0 = Pascal or older
         if cu.is_available():
-            cc = cu.get_device_capability(0)  # (major, minor)
+            cc = cu.get_device_capability(0)
             major = cc[0]
         else:
-            major = 99  # CPU fallback
+            major = 99
         if major < 7:
             torch_dtype = torch.float16
             print(f"[load_qwen_model] GPU CC={major}.x → using float16")
-        elif major < 8:
-            torch_dtype = torch.bfloat16
-            print(f"[load_qwen_model] GPU CC={major}.x → using bfloat16")
         else:
             torch_dtype = torch.bfloat16
             print(f"[load_qwen_model] GPU CC={major}.x → using bfloat16")
 
     kwargs = dict(
         torch_dtype=torch_dtype,
-        device_map=device_map,
     )
+    if device_map is not None:
+        kwargs["device_map"] = device_map
     try:
         import flash_attn  # noqa: F401
         kwargs["attn_implementation"] = "flash_attention_2"
     except ImportError:
         pass
     model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
-    model.config.use_cache = False  # required for gradient checkpointing
+    model.config.use_cache = False
     return model
 
 
