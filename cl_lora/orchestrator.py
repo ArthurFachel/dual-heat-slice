@@ -740,9 +740,25 @@ def main() -> None:
         help="Continual-learning training method (composes with any LoRA init). "
              "'vanilla' (default) is the existing per-stage train+merge pipeline. "
              "'o_lora' adds an orthogonality regularizer between current and prior "
-             "task A matrices.")
+             "task A matrices. "
+             "'dual_heat' applies per-neuron EWC gradient scaling + optional "
+             "lateral inhibition to reduce catastrophic forgetting.")
     parser.add_argument("--cl-o-lora-lambda", type=float, default=0.5,
         help="O-LoRA orthogonality regularizer weight. Used only when --cl-method=o_lora.")
+    # ── DualHeat hyperparameters ──────────────────────────────────────────
+    parser.add_argument("--cl-dh-fast-decay", type=float, default=0.93,
+        help="DualHeat: fast heat EMA decay (alpha). Default 0.93.")
+    parser.add_argument("--cl-dh-fast-strength", type=float, default=2.0,
+        help="DualHeat: lateral inhibition strength (gamma). Default 2.0.")
+    parser.add_argument("--cl-dh-fast-decay-rate", type=float, default=0.04,
+        help="DualHeat: active fast heat decay per step (delta). Default 0.04.")
+    parser.add_argument("--cl-dh-slow-strength", type=float, default=2.0,
+        help="DualHeat: EWC regularization strength (beta). Default 2.0.")
+    parser.add_argument("--cl-dh-slow-window", type=int, default=None,
+        help="DualHeat: slow heat memory window in steps. None = infinite memory. "
+             "Set to e.g. 2000 for bounded memory (forgetting of importance).")
+    parser.add_argument("--cl-dh-no-lateral-inhibition", action="store_true",
+        help="DualHeat: disable lateral inhibition (only EWC gradient scaling).")
     parser.add_argument("--keep-all-checkpoints", action="store_true",
         help="Keep all intermediate stage checkpoints. By default only the latest is kept.")
     parser.add_argument("--save-checkpoints", action="store_true",
@@ -860,6 +876,13 @@ def main() -> None:
             "lambda_orth": args.cl_o_lora_lambda,
             "max_seq_length": 256,
             "seed": args.seed,
+            # DualHeat kwargs (ignored by other methods via _accepted_kwargs)
+            "fast_decay": args.cl_dh_fast_decay,
+            "fast_strength": args.cl_dh_fast_strength,
+            "fast_decay_rate": args.cl_dh_fast_decay_rate,
+            "slow_strength": args.cl_dh_slow_strength,
+            "slow_window": args.cl_dh_slow_window,
+            "lateral_inhibition": not args.cl_dh_no_lateral_inhibition,
         },
         orchestrator_config=orchestrator_config,
         base_model_cache_dir=(args.base_model_cache or None),

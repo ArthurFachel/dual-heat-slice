@@ -28,8 +28,7 @@ cl_lora/
 ├── cl_methods/            # Composable training-time CL strategies
 │   ├── vanilla.py         #   - baseline (train + merge per stage)
 │   ├── o_lora.py          #   - O-LoRA orthogonality regularizer
-│   ├── inflora.py         #   - InfLoRA covariance-nullspace projection
-│   └── sapt.py            #   - SAPT parallel-adapter routing
+│   └── dual_heat.py       #   - Dual-Heat: EWC + lateral inhibition
 └── repro.py               # Global RNG seeding
 
 scripts/                   # Bash wrappers for the experiments in the paper
@@ -234,11 +233,135 @@ python recompute_metrics.py
 The metric definitions are in [cl_lora/metrics.py](cl_lora/metrics.py) and
 match the formulas in Appendix A of the paper.
 
-## Pre-trained Models
+## Dual-Heat Continual Learning Method
 
-Pre-trained adapters are not included in this repository. The base model must
-be downloaded directly from the Hugging Face Hub (see *Environment Variables*
-above).
+Dual-Heat is a continual learning method that reduces catastrophic forgetting by combining:
+
+1. **Fast heat** — tracks short-term output magnitudes with an EMA + active decay.
+   Neurons that were recently active get suppressed via **lateral inhibition**.
+2. **Slow heat** — tracks long-term output importance with a capped incremental mean.
+   Controls the **EWC (Elastic Weight Consolidation)** gradient scaling:
+   `grad /= (1 + beta * slow_heat)` per output neuron.
+3. **Lateral inhibition** (optional) — divisive normalization of neuron outputs
+   by the mean activity of all other neurons, promoting representational diversity.
+
+### Architecture
+
+Dual-Heat operates as a **CL method** (implementing the `CLMethod` interface in
+`cl_lora/cl_methods/dual_heat.py`). It composes with any LoRA init strategy
+(SLICE, LoRA-GA, LoRAM, vanilla). It registers:
+
+- **Forward hooks** on PEFT LoRA modules to track output magnitudes and optionally
+  apply lateral inhibition
+- **Backward hooks** on `lora_B.weight` to scale gradients per output neuron
+
+The heat state is saved/loaded between tasks automatically via the existing
+`cl_method.save()` / `cl_method.load()` mechanism.
+
+### Hyperparameters
+
+| Parameter | Flag | Default | Description |
+|---|---|---|---|
+| Fast heat decay (α) | `--cl-dh-fast-decay` | 0.93 | EMA decay rate for fast heat tracking |
+| Inhibition strength (γ) | `--cl-dh-fast-strength` | 2.0 | Lateral inhibition divisive strength |
+| Active decay (δ) | `--cl-dh-fast-decay-rate` | 0.04 | Per-step decay of fast heat |
+| EWC strength (β) | `--cl-dh-slow-strength` | 2.0 | Gradient scaling factor for EWC |
+| Memory window | `--cl-dh-slow-window` | None | Effective memory steps (None = infinite) |
+| Lateral inhibition | `--cl-dh-no-lateral-inhibition` | Off | Disable lateral inhibition (EWC only) |
+
+### Usage with the orchestrator
+
+```bash
+# Baseline (LoRA init + Dual-Heat)
+python -m cl_lora.orchestrator \
+  --sequence NI-Seq-G2 \
+  --run-name dual_heat_baseline \
+  --cl-method dual_heat
+
+# SLICE init + Dual-Heat
+python -m cl_lora.orchestrator \
+  --sequence NI-Seq-G2 \
+  --run-name slice_dual_heat \
+  --slice-init --slice-init-method slice \
+  --cl-method dual_heat
+
+# Dual-Heat with custom parameters
+python -m cl_lora.orchestrator \
+  --sequence NI-Seq-G2 \
+  --run-name dual_heat_strong_ewc \
+  --cl-method dual_heat \
+  --cl-dh-slow-strength 5.0 \
+  --cl-dh-fast-decay 0.95 \
+  --cl-dh-fast-strength 1.0 \
+  --cl-dh-no-lateral-inhibition
+```
+
+## Qwen ~0.5B CL Experiment
+
+A dedicated experiment runner validates Dual-Heat on a small LLM (Qwen 0.5B)
+with 4 controlled text classification tasks:
+
+| Task | Domain | Classes | Examples |
+|---|---|---|---|
+| A — Sentiment | movie reviews | positive, negative | 40 |
+| B — Topic | news classifier | sports, technology | 40 |
+| C — Question Type | question analysis | yes_no, factual | 40 |
+| D — Toxicity | content moderation | toxic, safe | 40 |
+
+### Usage
+
+```bash
+# Baseline (vanilla LoRA fine-tuning)
+python -m cl_lora.qwen_experiment --method vanilla
+
+# Dual-Heat
+python -m cl_lora.qwen_experiment --method dual_heat
+
+# Dual-Heat with stronger EWC
+python -m cl_lora.qwen_experiment --method dual_heat --slow-strength 5.0
+
+# EWC only (no lateral inhibition)
+python -m cl_lora.qwen_experiment --method dual_heat --no-lateral-inhibition
+
+# Compare all methods sequentially
+python -m cl_lora.qwen_experiment --compare-all
+
+# Custom LoRA settings
+python -m cl_lora.qwen_experiment --method dual_heat \
+  --lora-rank 32 --lora-alpha 16 \
+  --lr 1e-4 --epochs 2 --batch-size 4
+```
+
+### Output
+
+Results are saved under `results/qwen_experiment/<method>_seed<seed>/` with:
+
+- `metrics.json` — full results matrix, AP, FP, per-task forgetting
+- Console output shows the forgetting matrix after each stage
+
+The comparison table (`--compare-all`) presents:
+
+```
+Method                                          AP         FP         Forget
+Vanilla LoRA (baseline)                         ...        ...        ...
+O-LoRA                                          ...        ...        ...
+DualHeat                                        ...        ...        ...
+DualHeat (EWC only, no lateral inhibition)      ...        ...        ...
+DualHeat (strong EWC, beta=5.0)                ...        ...        ...
+```
+
+### Requirements
+
+- Python ≥ 3.10, CUDA-compatible GPU
+- `pip install -r requirements.txt` (includes `transformers`, `peft`, `accelerate`)
+- The Qwen model is downloaded from HuggingFace Hub on first run (~1 GB)
+
+### Hardware expectations (approximate)
+
+| Setting | VRAM | Time (4 tasks × 3 epochs) |
+|---|---|---|
+| Qwen 0.5B + LoRA rank 16, batch 8 | ~4-6 GB | ~10-20 minutes |
+| Qwen 0.5B + LoRA rank 32, batch 4 | ~5-7 GB | ~15-25 minutes |
 
 ## Results
 
