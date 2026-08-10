@@ -109,11 +109,11 @@ class _DualHeatModule(nn.Module):
         """Load heat state from a checkpoint onto CPU.
 
         The tensors will be moved to the correct device on the next
-        forward call via _get_state().
+        forward call via _get_or_restore().
         """
         if not state:
             return
-        # Store as "cpu_fp32" base key; _get_state will check this prefix
+        # Store as "cpu_fp32" base key; _get_or_restore will check this prefix
         # when creating new entries if no exact match exists.
         self._loaded_cpu_state = {
             "fast_heat": state["fast_heat"].clone(),
@@ -189,21 +189,6 @@ class _DualHeatModule(nn.Module):
             "slow_heat": first["slow_heat"].cpu().clone(),
             "slow_n": first["slow_n"].cpu().clone(),
             "step": first["step"].cpu().clone(),
-        }
-
-    def load_state_snapshot(self, state: Dict[str, torch.Tensor]) -> None:
-        """Load heat state from a checkpoint onto CPU.
-
-        The tensors will be moved to the correct device on the next
-        forward call via _get_state().
-        """
-        if not state:
-            return
-        self._per_device["cpu"] = {
-            "fast_heat": state["fast_heat"].clone(),
-            "slow_heat": state["slow_heat"].clone(),
-            "slow_n": state["slow_n"].clone(),
-            "step": state["step"].clone() if "step" in state else torch.zeros((), dtype=torch.long),
         }
 
     def extra_repr(self) -> str:
@@ -288,7 +273,7 @@ class DualHeatCLMethod(CLMethod):
             # Lateral inhibition: output /= (1 + gamma * mean_others)
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 and out_features > 1 and module.training:
                 with torch.no_grad():
-                    state = dh_mod._get_state(output.device, dtype=output.dtype)
+                    state = dh_mod._get_or_restore(output.device, dtype=output.dtype)
                     fh = state["fast_heat"]
                     sum_h = fh.sum()
                     mean_others = (sum_h - fh) / float(out_features - 1)
