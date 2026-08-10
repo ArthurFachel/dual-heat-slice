@@ -105,12 +105,44 @@ class _DualHeatModule(nn.Module):
 
     # ── Per-device heat state access ──────────────────────────────
 
-    def _get_state(self, device: torch.device) -> Dict[str, torch.Tensor]:
-        key = str(device)
-        if key not in self._per_device:
+    def load_state_snapshot(self, state: Dict[str, torch.Tensor]) -> None:
+        """Load heat state from a checkpoint onto CPU.
+
+        The tensors will be moved to the correct device on the next
+        forward call via _get_state().
+        """
+        if not state:
+            return
+        # Store as "cpu_fp32" base key; _get_state will check this prefix
+        # when creating new entries if no exact match exists.
+        self._loaded_cpu_state = {
+            "fast_heat": state["fast_heat"].clone(),
+            "slow_heat": state["slow_heat"].clone(),
+            "slow_n": state["slow_n"].clone(),
+            "step": state["step"].clone() if "step" in state else torch.zeros((), dtype=torch.long),
+        }
+
+    def _get_or_restore(self, device: torch.device, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
+        """Get per-device state, initializing from loaded CPU state if available."""
+        key = f"{str(device)}_{dtype}"
+        if key in self._per_device:
+            return self._per_device[key]
+
+        loaded = getattr(self, "_loaded_cpu_state", None)
+        if loaded is not None:
+            # Transfer loaded CPU tensors to target device/dtype
+            d = {}
+            for k, v in loaded.items():
+                if k in ("fast_heat", "slow_heat"):
+                    d[k] = v.to(device=device, dtype=dtype)
+                else:
+                    d[k] = v.to(device=device)
+            self._per_device[key] = d
+            self._loaded_cpu_state = None
+        else:
             self._per_device[key] = {
-                "fast_heat": torch.zeros(self.out_features, device=device),
-                "slow_heat": torch.zeros(self.out_features, device=device),
+                "fast_heat": torch.zeros(self.out_features, device=device, dtype=dtype),
+                "slow_heat": torch.zeros(self.out_features, device=device, dtype=dtype),
                 "slow_n": torch.zeros((), device=device),
                 "step": torch.zeros((), dtype=torch.long, device=device),
             }
@@ -118,12 +150,8 @@ class _DualHeatModule(nn.Module):
 
     @torch.no_grad()
     def update_heat(self, output: torch.Tensor) -> None:
-        """Update fast_heat and slow_heat from the current output.
-
-        Called from the forward hook on each training step.
-        Lazily creates per-device buffers.
-        """
-        state = self._get_state(output.device)
+        """Update fast_heat and slow_heat from the current output."""
+        state = self._get_or_restore(output.device, dtype=output.dtype)
 
         reduce_dims = tuple(range(output.dim() - 1))
         post_mag = output.detach().abs().mean(dim=reduce_dims)
@@ -140,11 +168,11 @@ class _DualHeatModule(nn.Module):
         state["slow_n"] += 1
         state["step"] += 1
 
-    def get_ewc_scale(self, device: torch.device) -> torch.Tensor:
+    def get_ewc_scale(self, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """Return per-neuron EWC scale: 1 / (1 + beta * slow_heat)."""
         if self.slow_strength <= 0.0:
-            return torch.ones(self.out_features, device=device)
-        state = self._get_state(device)
+            return torch.ones(self.out_features, device=device, dtype=dtype)
+        state = self._get_or_restore(device, dtype=dtype)
         return 1.0 / (1.0 + self.slow_strength * state["slow_heat"])
 
     def get_state_snapshot(self) -> Dict[str, torch.Tensor]:
@@ -236,7 +264,7 @@ class DualHeatCLMethod(CLMethod):
             if dh_mod is None:
                 return grad
             # Resolve EWC scale on the grad's device (handles DataParallel)
-            scale = dh_mod.get_ewc_scale(grad.device)
+            scale = dh_mod.get_ewc_scale(grad.device, dtype=grad.dtype)
             return grad * scale.view(-1, 1).to(dtype=grad.dtype, device=grad.device)
 
         return hook
@@ -260,7 +288,7 @@ class DualHeatCLMethod(CLMethod):
             # Lateral inhibition: output /= (1 + gamma * mean_others)
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 and out_features > 1 and module.training:
                 with torch.no_grad():
-                    state = dh_mod._get_state(output.device)
+                    state = dh_mod._get_state(output.device, dtype=output.dtype)
                     fh = state["fast_heat"]
                     sum_h = fh.sum()
                     mean_others = (sum_h - fh) / float(out_features - 1)
