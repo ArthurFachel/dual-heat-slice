@@ -392,4 +392,3 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         return Dataset.from_dict({"text": texts, "prompt": prompts, "target": targets})
 
     return _build(train_idx), _build(eval_idx)
-]
