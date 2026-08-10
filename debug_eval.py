@@ -23,7 +23,7 @@ messages = [
     {"role": "system", "content": "Classify the sentiment of the following movie review as 'positive' or 'negative'."},
     {"role": "user", "content": "Text: This movie was absolutely fantastic!"},
 ]
-prompt = tok.apply_chat_template(messages, tokenize=False)
+prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 print("=" * 60)
 print("TEST 1: Basic classification")
 print(f"Prompt: {repr(prompt[:200])}")
@@ -75,7 +75,7 @@ for domain, text, expected in test_examples:
         {"role": "system", "content": instructions[domain]},
         {"role": "user", "content": f"Text: {text}"},
     ]
-    prompt = tok.apply_chat_template(msgs, tokenize=False)
+    prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 
     tok.padding_side = "left"
     encoded = tok([prompt], return_tensors="pt", padding=True, truncation=True, max_length=256).to(device)

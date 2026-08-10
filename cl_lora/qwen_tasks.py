@@ -287,7 +287,10 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         if include_answer:
             messages.append({"role": "assistant", "content": label})
 
-        return tokenizer.apply_chat_template(messages, tokenize=False)
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False,
+            add_generation_prompt=not include_answer,
+        )
 
     def _build(ids):
         texts = []
