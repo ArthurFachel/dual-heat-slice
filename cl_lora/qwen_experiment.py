@@ -243,7 +243,7 @@ def train_one_task(
     set_global_seed(seed)
 
     # Build dataset
-    train_dataset, eval_dataset = build_qwen_dataset(task, seed=seed)
+    train_dataset, eval_dataset = build_qwen_dataset(task, seed=seed, tokenizer=tokenizer)
     train_tok = tokenize_dataset(train_dataset, tokenizer, max_length=max_seq_length)
     eval_tok = tokenize_dataset(eval_dataset, tokenizer, max_length=max_seq_length)
 
@@ -379,7 +379,7 @@ def run_experiment(
     n_tasks = len(tasks)
 
     # Build eval datasets once
-    eval_datasets = [build_qwen_dataset(t, seed=seed)[1] for t in tasks]
+    eval_datasets = [build_qwen_dataset(t, seed=seed, tokenizer=tokenizer)[1] for t in tasks]
 
     # ── Evaluation matrix ──────────────────────────────────────────
     # results[i][j] = accuracy on task j after training through task i

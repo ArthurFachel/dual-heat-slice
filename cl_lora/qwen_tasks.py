@@ -247,14 +247,19 @@ def make_prompt(text: str, domain: str) -> str:
     return f"{instr}\n\nText: {text}\n\nLabel:"
 
 
-def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2) -> tuple:
+def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
+                       tokenizer=None) -> tuple:
     """Build train/eval datasets for a Qwen task.
+
+    If *tokenizer* is provided, examples are formatted with the model's
+    chat template so the training/eval distribution matches what the
+    instruct-tuned model expects.
 
     Returns (train_dataset, eval_dataset) as HuggingFace Datasets.
     Each example has:
-      - 'text' (prompt + label for causal LM training)
-      - 'prompt' (prompt only, for evaluation)
-      - 'target' (label only, for evaluation)
+      - 'text' (chat-formatted prompt + answer for causal LM training)
+      - 'prompt' (chat-formatted prompt only, for evaluation generation)
+      - 'target' (label only, for evaluation comparison)
     """
     rng = random.Random(seed)
     indexes = list(range(len(task.data)))
@@ -264,15 +269,40 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2) 
     train_idx = indexes[:split_idx]
     eval_idx = indexes[split_idx:]
 
+    def _format_chat(text: str, label: str, domain: str, include_answer: bool) -> str:
+        """Apply Qwen chat template to a single example."""
+        instructions = {
+            "sentiment": "Classify the sentiment of the following movie review as 'positive' or 'negative'.",
+            "topic": "Classify whether the following sentence is about 'sports' or 'technology'.",
+            "question_type": "Classify the following question as 'yes_no' or 'factual'.",
+            "toxicity": "Classify the following text as 'toxic' or 'safe'.",
+        }
+        system_msg = instructions.get(domain, "Classify the following text.")
+        user_msg = f"Text: {text}"
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+        if include_answer:
+            messages.append({"role": "assistant", "content": label})
+
+        return tokenizer.apply_chat_template(messages, tokenize=False)
+
     def _build(ids):
         texts = []
         prompts = []
         targets = []
         for i in ids:
             text, label = task.data[i]
-            prompt = make_prompt(text, task.domain)
-            texts.append(prompt + " " + label)
-            prompts.append(prompt)
+            if tokenizer is not None:
+                full_text = _format_chat(text, label, task.domain, include_answer=True)
+                prompt_text = _format_chat(text, label, task.domain, include_answer=False)
+            else:
+                prompt_text = make_prompt(text, task.domain)
+                full_text = prompt_text + " " + label
+            texts.append(full_text)
+            prompts.append(prompt_text)
             targets.append(label)
         return Dataset.from_dict({"text": texts, "prompt": prompts, "target": targets})
 
