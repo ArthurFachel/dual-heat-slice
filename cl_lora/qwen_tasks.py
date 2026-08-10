@@ -232,7 +232,7 @@ TASK_B = QwenTask(name="Topic", domain="topic", data=TOPIC_TRAIN)
 TASK_C = QwenTask(name="QuestionType", domain="question_type", data=QUESTION_TYPE_TRAIN)
 TASK_D = QwenTask(name="Toxicity", domain="toxicity", data=TOXICITY_TRAIN)
 
-QWEN_CL_TASKS = [TASK_A, TASK_B, TASK_C, TASK_D]
+QWEN_CL_TASKS = [TASK_A, TASK_B, TASK_D]  # TASK_C (QuestionType) disabled
 
 
 def make_prompt(text: str, domain: str) -> str:
@@ -240,12 +240,12 @@ def make_prompt(text: str, domain: str) -> str:
     instructions = {
         "sentiment": "Classify the sentiment of the following movie review as 'positive' or 'negative'.",
         "topic": "Classify whether the following sentence is about 'sports' or 'technology'.",
-        "question_type": "Classify the following question as 'yes_no' (yes/no question) or 'factual' (fact-seeking question). Output the label only.",
+        # "question_type": "disabled",
         "toxicity": "Classify the following text as 'toxic' or 'safe'.",
     }
     instr = instructions.get(domain, "Classify the following text.")
-    if domain == "question_type":
-        return f"{instr}\n\nQuestion: {text}\n\nLabel:"
+    # if domain == "question_type":
+    #     return f"{instr}\n\nQuestion: {text}\n\nLabel:"
     return f"{instr}\n\nText: {text}\n\nLabel:"
 
 
@@ -276,14 +276,14 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         instructions = {
             "sentiment": "Classify the sentiment of the following movie review as 'positive' or 'negative'.",
             "topic": "Classify whether the following sentence is about 'sports' or 'technology'.",
-            "question_type": "Classify the following question as 'yes_no' (yes/no question) or 'factual' (fact-seeking question). Output the label only.",
+            # "question_type": "disabled",
             "toxicity": "Classify the following text as 'toxic' or 'safe'.",
         }
         system_msg = instructions.get(domain, "Classify the following text.")
-        if domain == "question_type":
-            user_msg = f"Question: {text}"
-        else:
-            user_msg = f"Text: {text}"
+        # if domain == "question_type":
+        #     user_msg = f"Question: {text}"
+        # else:
+        user_msg = f"Text: {text}"  # simplified without question_type
 
         messages = [
             {"role": "system", "content": system_msg},
