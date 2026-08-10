@@ -54,6 +54,8 @@ def set_global_seed(
             # negligible precision loss (intermediate products only).
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            # Note: TF32 requires Ampere+ (CC >= 8.0). On Pascal GPUs (CC 6.x)
+            # these settings are silently ignored, which is harmless.
 
         if deterministic:
             try:

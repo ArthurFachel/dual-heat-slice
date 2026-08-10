@@ -77,19 +77,25 @@ def accumulate_gradients(
     return grads, steps
 
 
-def combine_grads(
+def subtract_grads(
     grads_current: Dict[str, torch.Tensor],
     grads_retain: Optional[Dict[str, torch.Tensor]],
     retain_scale: float,
 ) -> Dict[str, torch.Tensor]:
-    combined: Dict[str, torch.Tensor] = {}
+    """Compute g_current - retain_scale * g_retain per module.
+
+    Despite the name suggesting a generic combination, this computes the
+    orthogonalized gradient (current minus a scaled retain component),
+    which is the core operation used when gradient projection is disabled.
+    """
+    result: Dict[str, torch.Tensor] = {}
     for name, g_c in grads_current.items():
         g_r = grads_retain.get(name) if grads_retain is not None else None
         if g_r is None:
-            combined[name] = g_c
+            result[name] = g_c
         else:
-            combined[name] = g_c - retain_scale * g_r
-    return combined
+            result[name] = g_c - retain_scale * g_r
+    return result
 
 
 def project_current_gradients(

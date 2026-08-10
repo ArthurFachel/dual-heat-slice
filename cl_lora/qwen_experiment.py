@@ -263,8 +263,10 @@ def train_one_task(
     if cu.is_available():
         gpu_major = cu.get_device_capability(0)[0]
         use_fp16 = gpu_major < 7
+        use_cpu = False
     else:
         use_fp16 = False
+        use_cpu = True
 
     training_args = TrainingArguments(
         output_dir=str(output_path),
@@ -274,10 +276,12 @@ def train_one_task(
         learning_rate=learning_rate,
         num_train_epochs=num_epochs,
         logging_steps=logging_steps,
+        warmup_ratio=0.01,
         eval_strategy="no",
         save_strategy="no",
-        bf16=not use_fp16,
+        bf16=not use_fp16 and not use_cpu,
         fp16=use_fp16,
+        use_cpu=use_cpu,
         report_to="none",
         remove_unused_columns=True,
         seed=seed,

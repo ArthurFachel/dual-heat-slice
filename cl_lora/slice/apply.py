@@ -14,15 +14,14 @@ def apply_slice_inits(
     *,
     lora_alpha: float = 2.0,
     r: Optional[int] = None,
-    decomposition: Optional[str] = None,
     skip_absorption: Optional[bool] = None,
     adapter_name: str = "default",
 ) -> int:
     """Apply slice inits to a PEFT LoRA model with in-place absorption.
 
-    `skip_absorption` (when not None) overrides the decomposition-based
-    default. `adapter_name` selects which named LoRA adapter on each module
-    receives the init (default `"default"`).
+    `skip_absorption` (when not None) skips the base-weight absorption step
+    (W -= B @ A * scaling). Defaults to False. `adapter_name` selects which
+    named LoRA adapter on each module receives the init (default `"default"`).
     """
     from peft.tuners.lora import Linear as LoraLinear
 
@@ -54,13 +53,7 @@ def apply_slice_inits(
         return None
 
     if skip_absorption is None:
-        skip_absorption = decomposition in {
-            "right_singular_vectors",
-            "right_singular_vectors_kaiming",
-            "right_svd_kaiming_random_basis",
-        }
-    else:
-        skip_absorption = bool(skip_absorption)
+        skip_absorption = False
 
     if r is None or int(r) <= 0:
         raise RuntimeError("slice apply requires a valid LoRA rank `r` for absorption.")
@@ -178,9 +171,8 @@ def apply_slice_inits(
                     )
             else:
                 logger.info(
-                    "[slice] Skipping LoRA absorption for layer %s due to decomposition='%s'",
+                    "[slice] Skipping LoRA absorption for layer %s (skip_absorption=True)",
                     init_key,
-                    decomposition,
                 )
 
         num_written += 1

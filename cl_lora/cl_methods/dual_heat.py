@@ -272,13 +272,12 @@ class DualHeatCLMethod(CLMethod):
 
             # Lateral inhibition: output /= (1 + gamma * mean_others)
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 and out_features > 1 and module.training:
-                with torch.no_grad():
-                    state = dh_mod._get_or_restore(output.device, dtype=output.dtype)
-                    fh = state["fast_heat"]
-                    sum_h = fh.sum()
-                    mean_others = (sum_h - fh) / float(out_features - 1)
-                    scale = 1.0 + dh_mod.fast_strength * mean_others
-                    output = output / scale
+                state = dh_mod._get_or_restore(output.device, dtype=output.dtype)
+                fh = state["fast_heat"]
+                sum_h = fh.sum()
+                mean_others = (sum_h - fh) / float(out_features - 1)
+                scale = 1.0 + dh_mod.fast_strength * mean_others
+                output = output / scale
                 output_to_track = output
 
             # Track heat (only in training mode)
@@ -350,6 +349,10 @@ class DualHeatCLMethod(CLMethod):
             len(self._dual_modules),
         )
 
+        # Restore heat state after registration (unified with pre_train,
+        # no monkey-patch needed).
+        self.restore_heat_state(lora_model)
+
     def aux_loss(self, lora_model: torch.nn.Module) -> Optional[torch.Tensor]:
         """DualHeat does not use an additive loss term."""
         return None
@@ -415,7 +418,7 @@ class DualHeatCLMethod(CLMethod):
             logger.info("DualHeat state not found at %s (fresh start)", path)
             return
 
-        payload = torch.load(path, map_location="cpu", weights_only=False)
+        payload = torch.load(path, map_location="cpu", weights_only=True)
         hp = payload.get("hyperparams", {})
         self.fast_decay = float(hp.get("fast_decay", self.fast_decay))
         self.fast_strength = float(hp.get("fast_strength", self.fast_strength))
@@ -424,8 +427,8 @@ class DualHeatCLMethod(CLMethod):
         self.slow_window = hp.get("slow_window", self.slow_window)
         self.lateral_inhibition = bool(hp.get("lateral_inhibition", self.lateral_inhibition))
 
-        self._loaded_module_state = payload.get("module_state", {})
-        logger.info("DualHeat state loaded: %d modules from %s", len(self._loaded_module_state), path)
+        self._loaded_heat_state = payload.get("module_state", {})
+        logger.info("DualHeat state loaded: %d modules from %s", len(self._loaded_heat_state), path)
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -443,7 +446,7 @@ class DualHeatCLMethod(CLMethod):
 
     def restore_heat_state(self, lora_model: nn.Module) -> None:
         """Apply loaded heat state to live _DualHeatModule instances."""
-        loaded = getattr(self, "_loaded_module_state", None)
+        loaded = getattr(self, "_loaded_heat_state", None)
         if loaded is None:
             return
         for name, dh_mod in self._dual_modules.items():
@@ -451,15 +454,5 @@ class DualHeatCLMethod(CLMethod):
             if state is None:
                 continue
             dh_mod.load_state_snapshot(state)
-        self._loaded_module_state = None
+        self._loaded_heat_state = None
         logger.info("DualHeat heat state restored: %d modules", len(self._dual_modules))
-
-
-# Patch pre_train to restore heat state after registration.
-_original_pre_train = DualHeatCLMethod.pre_train
-
-def _patched_pre_train(self, lora_model, *, stage_idx, retain_tasks):
-    _original_pre_train(self, lora_model, stage_idx=stage_idx, retain_tasks=retain_tasks)
-    self.restore_heat_state(lora_model)
-
-DualHeatCLMethod.pre_train = _patched_pre_train

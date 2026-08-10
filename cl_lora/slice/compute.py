@@ -19,7 +19,7 @@ from .cache import (
 )
 from .config import SliceInitConfig
 from .decompose import build_ab_from_gradient, build_ab_loram
-from .gradients import accumulate_gradients, combine_grads, project_current_gradients
+from .gradients import accumulate_gradients, project_current_gradients, subtract_grads
 from .projections import project_gradients_advanced
 from .utils import build_dataloader, model_device, target_weight_params, tokenize_dataset
 
@@ -107,7 +107,8 @@ def compute_slice_inits(
         config.max_steps,
         config.per_device_batch_size,
     )
-    lora_cfg = build_lora_config()
+    r_use = config.rank or 128
+    lora_cfg = build_lora_config(r=r_use)
     target_params = target_weight_params(model, lora_cfg.target_modules)
     if not target_params:
         logger.error("No target modules matched for slice initialization.")
@@ -273,7 +274,7 @@ def compute_slice_inits(
             "gamma": None,
         }
     else:
-        combined = combine_grads(grads_current, grads_r, config.retain_scale)
+        combined = subtract_grads(grads_current, grads_r, config.retain_scale)
         logger.info("Built combined gradient matrix for %d modules (retain_scale=%s)", len(combined), config.retain_scale)
         projection_stats = {
             "applied": False,
@@ -413,6 +414,7 @@ def load_or_compute_slice_inits(
                 "Use init_method='slice' for retain-gradient projection."
             )
 
+    # Usa o mesmo default (128) que compute_slice_inits e orchestrator.py --rank
     lora_cfg = build_lora_config(r=int(config.rank or 128))
     lora_payload = {
         "r": int(getattr(lora_cfg, "r", 0) or 0),
@@ -424,13 +426,14 @@ def load_or_compute_slice_inits(
     }
 
     is_lora_ga = (config.init_method == "lora_ga")
+    effective_rank = config.rank or 128  # canonicaliza None → 128 para cache key
     payload = {
         "init_method": config.init_method,
         "cache_context": config.cache_context,
         "current_task": _task_fingerprint(current_task),
         # Canonicalize LoRA-GA cache identity: retain tasks are ignored by design.
         "retain_tasks": None if is_lora_ga else ([_task_fingerprint(rt) for rt in (retain_tasks or [])] or None),
-        "rank": config.rank,
+        "rank": effective_rank,
         "seed": config.seed,
         "max_seq_length": config.max_seq_length,
         "max_steps": config.max_steps,

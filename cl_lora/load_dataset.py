@@ -109,7 +109,11 @@ def _resolve_superni_task_name(task_name: str) -> str:
     raise ValueError(
         "Could not resolve SuperNI task name. "
         f"Received '{task_name}'. Expected a full task name like "
-        "'task363_sst2_polarity_classification' or an NI id like 'NI363'."
+        "'task363_sst2_polarity_classification' or an NI id like 'NI363'.\n\n"
+        "NOTE: Several NI IDs from the paper Table 4 (NI141, NI163, NI224, NI231, "
+        "NI273, NI360, NI488, NI611, NI1292, NI1343, NI1357, NI1510) do NOT have "
+        "matching filenames in the allenai/natural-instructions repository. "
+        "Sequences using these tasks will fail with HTTP 404."
     )
 
 

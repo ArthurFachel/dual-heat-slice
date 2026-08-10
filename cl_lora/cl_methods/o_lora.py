@@ -131,7 +131,7 @@ class OLoRAMethod(CLMethod):
         path = os.path.join(state_dir, "o_lora_state.pt")
         if not os.path.exists(path):
             return
-        payload = torch.load(path, map_location="cpu", weights_only=False)
+        payload = torch.load(path, map_location="cpu", weights_only=True)
         self.lambda_orth = float(payload.get("lambda_orth", self.lambda_orth))
         snaps = payload.get("snapshots", [])
         self._snapshots = [dict(s) for s in snaps]

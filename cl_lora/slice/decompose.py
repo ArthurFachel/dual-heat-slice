@@ -104,6 +104,7 @@ def build_ab_loram(
     beta = math.pow(max(rho * variance_ratio, eps), 1.0 / 4.0)
     B = B * beta
     A = A * beta
+    del recon  # libera a matrix completa d_out x d_in
 
     return {
         "A": A.to(device=device, dtype=dtype).contiguous(),
