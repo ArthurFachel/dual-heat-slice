@@ -240,10 +240,12 @@ def make_prompt(text: str, domain: str) -> str:
     instructions = {
         "sentiment": "Classify the sentiment of the following movie review as 'positive' or 'negative'.",
         "topic": "Classify whether the following sentence is about 'sports' or 'technology'.",
-        "question_type": "Classify the following question as 'yes_no' or 'factual'.",
+        "question_type": "Classify the following question as 'yes_no' (yes/no question) or 'factual' (fact-seeking question). Output the label only.",
         "toxicity": "Classify the following text as 'toxic' or 'safe'.",
     }
     instr = instructions.get(domain, "Classify the following text.")
+    if domain == "question_type":
+        return f"{instr}\n\nQuestion: {text}\n\nLabel:"
     return f"{instr}\n\nText: {text}\n\nLabel:"
 
 
@@ -274,11 +276,14 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         instructions = {
             "sentiment": "Classify the sentiment of the following movie review as 'positive' or 'negative'.",
             "topic": "Classify whether the following sentence is about 'sports' or 'technology'.",
-            "question_type": "Classify the following question as 'yes_no' or 'factual'.",
+            "question_type": "Classify the following question as 'yes_no' (yes/no question) or 'factual' (fact-seeking question). Output the label only.",
             "toxicity": "Classify the following text as 'toxic' or 'safe'.",
         }
         system_msg = instructions.get(domain, "Classify the following text.")
-        user_msg = f"Text: {text}"
+        if domain == "question_type":
+            user_msg = f"Question: {text}"
+        else:
+            user_msg = f"Text: {text}"
 
         messages = [
             {"role": "system", "content": system_msg},
