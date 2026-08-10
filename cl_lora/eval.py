@@ -66,7 +66,7 @@ def _import_lm_eval_modules():
     return lm_eval, hflm_module.HFLM
 
 
-def _build_hflm(model, tokenizer, device: str = "cuda", dtype: str = "bfloat16"):
+def _build_hflm(model, tokenizer, device: str = "cuda", dtype: str = "float16"):
     _, hflm_cls = _import_lm_eval_modules()
     return hflm_cls(pretrained=model, tokenizer=tokenizer, device=device, dtype=dtype)
 
@@ -497,7 +497,7 @@ def evaluate_general_tasks(
     eval_task_keys: list[str] | None = None,
     batch_size: int = 8,
     device: str = "cuda",
-    dtype: str = "bfloat16",
+    dtype: str = "float16",
     alpaca_n_samples: int = 190,
     alpaca_max_new_tokens: int = 128,
     seed: int = 42,
@@ -762,7 +762,7 @@ def main() -> None:
         pretrained=args.model,
         peft=args.peft,
         device="cuda",
-        dtype="bfloat16",
+        dtype="float16",
     )
     gp_raw = lm_eval.simple_evaluate(
         model=model,

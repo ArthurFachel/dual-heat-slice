@@ -75,7 +75,7 @@ def build_tokenizer(model_name: str = MODEL_NAME, hf_token: str | None = HF_TOKE
 def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.bfloat16,
+    torch_dtype: torch.dtype = torch.float16,
     device_map: str = "auto",
 ):
     local = Path(model_name).is_dir()
@@ -165,7 +165,7 @@ def load_model_with_adapters(
     base_model_path: str,
     adapter_paths: List[str],
     hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.bfloat16,
+    torch_dtype: torch.dtype = torch.float16,
     device_map: str = "auto",
 ):
     """Load base model and apply LoRA adapters sequentially, merging each one.
@@ -263,7 +263,7 @@ def train_on_task(
     max_seq_length: int = 256,
     eval_size: int = 200,
     seed: int = 42,
-    use_bf16: bool = True,
+    use_bf16: bool = False,
     save_adapter: bool = True,
     save_intermediate_checkpoints: bool = False,
     adapter_checkpoint_path: str | None = None,
@@ -407,6 +407,7 @@ def train_on_task(
         eval_strategy="steps",
         eval_steps=eval_steps,
         bf16=use_bf16,
+        fp16=not use_bf16,
         dataloader_num_workers=2,
         report_to="none",
         remove_unused_columns=True,
