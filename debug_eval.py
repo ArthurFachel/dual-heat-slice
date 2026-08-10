@@ -45,9 +45,11 @@ with torch.no_grad():
 
 input_len = encoded["input_ids"].shape[1]
 gen = outputs[0, input_len:]
-pred = tok.decode(gen, skip_special_tokens=True).strip().lower()
+raw = tok.decode(gen, skip_special_tokens=True).strip().lower()
+pred = raw.rstrip('.,!?;:')
 print(f"Generated tokens: {gen.tolist()}")
-print(f"Decoded: {repr(pred)}")
+print(f"Decoded: {repr(raw)}")
+print(f"Stripped: {repr(pred)}")
 print(f"Match 'positive': {pred == 'positive'}")
 
 # Test 2: all 4 tasks with the exact eval format
@@ -88,7 +90,8 @@ for domain, text, expected in test_examples:
         )
 
     gen = outputs[0, encoded["input_ids"].shape[1]:]
-    pred = tok.decode(gen, skip_special_tokens=True).strip().lower()
+    raw = tok.decode(gen, skip_special_tokens=True).strip().lower()
+    pred = raw.rstrip('.,!?;:')
     is_match = pred == expected.lower()
     print(f"  {domain:>15} | expected={expected:<10} | got={repr(pred):<20} | match={is_match}")
     if is_match:

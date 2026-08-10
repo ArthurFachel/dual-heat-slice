@@ -199,7 +199,8 @@ def evaluate_task(
         input_len = encoded["input_ids"].shape[1]
         for i, target in enumerate(batch_targets):
             pred_ids = outputs[i, input_len:]
-            prediction = tokenizer.decode(pred_ids, skip_special_tokens=True).strip().lower()
+            raw = tokenizer.decode(pred_ids, skip_special_tokens=True).strip().lower()
+            prediction = raw.rstrip('.,!?;:')
             correct += int(prediction == target.lower())
             total += 1
 
