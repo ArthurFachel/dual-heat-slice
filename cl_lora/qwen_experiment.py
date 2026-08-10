@@ -340,10 +340,12 @@ def run_experiment(
     fast_decay_rate: float = 0.04,
     slow_window: Optional[int] = None,
     lateral_inhibition: bool = True,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """Run a full CL experiment on the 4 Qwen tasks.
 
-    Returns a dict with evaluation matrices, metrics, and forgetting.
+    Extra kwargs (e.g. lambda_orth for o_lora) are forwarded to the
+    CL method constructor via cl_kwargs.
     """
     run_name = f"{method}_seed{seed}"
     run_dir = Path(output_dir) / run_name
@@ -374,7 +376,7 @@ def run_experiment(
             "lateral_inhibition": lateral_inhibition,
         }
     elif method == "o_lora":
-        cl_kwargs = {"lambda_orth": 0.5}
+        cl_kwargs = {"lambda_orth": kwargs.get("lambda_orth", 0.5)}
 
     cl_method = build_cl_method(method, **cl_kwargs)
     print(f"CL method: {method} | {cl_method.metadata()}")
@@ -604,6 +606,7 @@ def main():
             fast_decay_rate=args.fast_decay_rate,
             slow_window=args.slow_window,
             lateral_inhibition=not args.no_lateral_inhibition,
+            lambda_orth=args.o_lora_lambda,
         )
 
 
