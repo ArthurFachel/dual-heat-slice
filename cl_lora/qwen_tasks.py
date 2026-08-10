@@ -280,7 +280,8 @@ TOXICITY_TRAIN = [
     ("That makes perfect sense thank you for the explanation.", "safe"),
     ("Your dedication to this cause is truly inspiring.", "safe"),
     ("Let me know if there is anything I can do to support you.", "safe"),
-    ("I really appreciate your honesty and transparency.", "safe"),]
+    ("I really appreciate your honesty and transparency.", "safe"),
+]
 
 
 
@@ -306,7 +307,7 @@ class QwenTask:
 
 TASK_A = QwenTask(name="Sentiment", domain="sentiment", data=SENTIMENT_TRAIN)
 TASK_B = QwenTask(name="Topic", domain="topic", data=TOPIC_TRAIN)
-TASK_C = QwenTask(name="QuestionType", domain="question_type", data=QUESTION_TYPE_TRAIN)
+# TASK_C = QwenTask(name="QuestionType", domain="question_type", data=QUESTION_TYPE_TRAIN)  # disabled
 TASK_D = QwenTask(name="Toxicity", domain="toxicity", data=TOXICITY_TRAIN)
 
 QWEN_CL_TASKS = [TASK_A, TASK_B, TASK_D]  # TASK_C (QuestionType) disabled
@@ -392,4 +393,3 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         return Dataset.from_dict({"text": texts, "prompt": prompts, "target": targets})
 
     return _build(train_idx), _build(eval_idx)
-]
