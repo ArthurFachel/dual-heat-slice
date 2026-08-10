@@ -4,8 +4,12 @@ This repository contains the official implementation accompanying the paper
 [*"Low-Rank Adapters Initialization via Gradient Surgery for Continual Learning"*](https://arxiv.org/abs/2605.12752).
 It reproduces the SLICE initializer, the LoRA initialization baselines (vanilla
 LoRA, LoRA-GA, LoRAM), the optional training-time continual-learning methods
-(O-LoRA, InfLoRA, SAPT), and the adversarial **NI-Seq-Opposite** task
+(O-LoRA, Dual-Heat), and the adversarial **NI-Seq-Opposite** task
 sequences introduced in the paper.
+
+> **Note:** SAPT and InfLoRA are referenced in the sweep scripts but are not
+> yet implemented in this repository. The scripts serve as a template for
+> future extension.
 
 ## Repository Layout
 
@@ -19,13 +23,20 @@ cl_lora/
 ├── task_sequences.py      # NI-Seq-{C,G,M,Opposite} and TRACE sequence definitions
 ├── metrics.py             # AP / FP / Forget / GP / IP computation
 ├── find_conflicting_seq.py# Mining script that produced NI-Seq-Opposite
+├── lora_config.py         # LoRA configuration builder (extracted from train.py)
+├── qwen_tasks.py          # Qwen 4-task CL experiment task definitions
+├── qwen_experiment.py     # Qwen CL experiment runner (any model, all CL methods)
 ├── slice/                 # SLICE init: gradient capture, projection, SVD, apply
 │   ├── compute.py         #   - main entry point (compute / cache inits)
 │   ├── gradients.py       #   - per-module gradient accumulation
 │   ├── projections.py     #   - PCGrad / CAGrad / GradVac / Nullspace operators
 │   ├── decompose.py       #   - truncated SVD & magnitude rescaling
-│   └── apply.py           #   - inject (A, B) into LoRA layers
+│   ├── apply.py           #   - inject (A, B) into LoRA layers
+│   ├── config.py          #   - SliceInitConfig dataclass
+│   ├── utils.py           #   - tokenization, dataloader, device helpers
+│   └── cache.py           #   - disk cache for computed inits
 ├── cl_methods/            # Composable training-time CL strategies
+│   ├── base.py            #   - abstract CLMethod interface
 │   ├── vanilla.py         #   - baseline (train + merge per stage)
 │   ├── o_lora.py          #   - O-LoRA orthogonality regularizer
 │   └── dual_heat.py       #   - Dual-Heat: EWC + lateral inhibition
@@ -33,13 +44,17 @@ cl_lora/
 
 scripts/                   # Bash wrappers for the experiments in the paper
 ├── full_train_projection_variants.sh   # SLICE projection-variant sweep (Tab. 1)
-├── test_init_x_cl_methods_lean.sh      # Init × CL-method composition matrix
+├── test_init_x_cl_methods.sh           # Init × CL-method composition matrix (smoke)
+├── test_init_x_cl_methods_lean.sh      # Init × CL-method composition matrix (lean)
+├── lean_sweep.sh                       # SLURM driver for memory-economy × CL sweep
 ├── alpha_sweep.sh                      # rsLoRA α ∈ {1, 2, 4} sweep (Appx. C)
+├── sapt.sh                             # SAPT training sweep (5 inits × all seqs)
+├── train_sapt.sh                       # SLURM wrapper for SAPT training
 ├── eval.sh, parallel_eval.sh, ...      # Evaluation drivers
 └── compute_sequence_metrics.sh         # NI-Seq-Opposite sequence mining
 
-# Analysis / figures (read run artifacts under results/)
-plot.py, plot_gp_curve.py, alpha_sweep_analysis.py,
+# Debug / analysis (read run artifacts under results/)
+debug_eval.py, plot.py, plot_gp_curve.py, alpha_sweep_analysis.py,
 results_analysis.py, tables_script.py, recompute_metrics.py
 ```
 
@@ -104,6 +119,9 @@ Switch the projection operator with `--slice-projection-method` and the
 PCGrad/CAGrad strength with `--slice-cagrad-c` (e.g. `--slice-projection-method
 cagrad --slice-cagrad-c 0.50` for the c=0.5 variant in the main table).
 
+Available projection methods: `pcgrad`, `pcgrad_c`, `gradvac`, `nullspace`,
+`magnitude_preserving`.
+
 ### Baseline initializations
 
 Replace `--slice-init-method` to run the LoRA baselines compared in the paper:
@@ -150,6 +168,33 @@ GPU=0 SEQUENCES="NI-Seq-G2" RUN_SUFFIX=lean01 \
 Each script accepts `--resume` (passed through to the orchestrator) so
 interrupted runs can be picked up where they left off.
 
+### Composition matrix (init × CL method)
+
+The files `scripts/test_init_x_cl_methods.sh` and
+`scripts/test_init_x_cl_methods_lean.sh` iterate every LoRA initialization
+(lora_vanilla, loram, lora_ga, slice) against every CL training method
+(o_lora, inflora, sapt) — a full 4 × 3 = 12-run sweep per sequence:
+
+```compose
+# Smoke (small budgets)
+GPU=0 SEQUENCES="NI-Seq-G2" RUN_SUFFIX=smoke01 \
+    bash scripts/test_init_x_cl_methods.sh
+
+# Restrict to specific init + CL method combos
+ONLY_INITS="slice lora_ga" ONLY_CL="sapt" \
+    bash scripts/test_init_x_cl_methods.sh
+```
+
+Filter with `ONLY_INITS` and `ONLY_CL` environment variables.
+
+For cluster runs, `scripts/lean_sweep.sh` wraps the same sweep in SLURM,
+sharding inits across GPUs to avoid race conditions on the slice cache:
+
+```slurm
+sbatch --export=ALL,SEQUENCES="NI-Seq-G2 TRACE",RUN_SUFFIX=cluster01 \
+    scripts/lean_sweep.sh
+```
+
 ### Adversarial sequence mining (NI-Seq-Opposite)
 
 To regenerate the adversarial 5-task sequences described in Appendix B:
@@ -176,6 +221,24 @@ all `C(46, 5) = 1,370,754` length-5 subsets by mean pairwise gradient cosine.
 | Per-device train batch size | 16 | [cl_lora/train.py:344](cl_lora/train.py#L344) |
 | SLICE accumulation steps `S_cur`, `S_prev` | 8 | `--slice-max-steps` |
 | Random seed | 42 | `--seed` |
+
+### Additional orchestrator flags
+
+The orchestrator supports several flags not shown in the examples above:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--model-name` | `meta-llama/Llama-3.2-3B-Instruct` | Override the base model |
+| `--output-root` | `results` | Root directory for run outputs |
+| `--train-output-root` | `outputs` | Root directory for training checkpoints |
+| `--base-model-cache` | `outputs/base_models` | Shared base model cache (symlinked per run). Empty string disables sharing. |
+| `--train-only` | off | Skip evaluation; save checkpoints for later eval via `eval_standalone` |
+| `--keep-all-checkpoints` | off | Keep all intermediate stage checkpoints (default: only latest) |
+| `--save-checkpoints` | off | Save HF Trainer intermediate checkpoints (checkpoint-N dirs) |
+| `--general-eval-strategy` | `every_stage` | `every_stage` or `final_only` (skip GP/IP at intermediate stages) |
+| `--seen-eval-strategy` | `full_matrix` | `full_matrix` or `diagonal_final` (evaluate only diagonal + final) |
+| `--log-level` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `--cl-method` | `vanilla` | CL training method: `vanilla`, `o_lora`, `dual_heat` |
 
 ## Evaluation
 
@@ -233,9 +296,33 @@ python recompute_metrics.py
 The metric definitions are in [cl_lora/metrics.py](cl_lora/metrics.py) and
 match the formulas in Appendix A of the paper.
 
-## Dual-Heat Continual Learning Method
+## Continual-Learning Training Methods
 
-Dual-Heat is a continual learning method that reduces catastrophic forgetting by combining:
+The repository implements three composable CL training methods that work with
+any LoRA initialization strategy (SLICE, LoRA-GA, LoRAM, vanilla). All
+implement the `CLMethod` interface in `cl_lora/cl_methods/base.py`.
+
+### O-LoRA
+
+O-LoRA applies an orthogonality regularizer between the current task's
+LoRA A matrix and all prior task A matrices, encouraging the new adapter to
+occupy a subspace orthogonal to previous knowledge. Use via:
+
+```bash
+python -m cl_lora.orchestrator \
+  --sequence NI-Seq-G2 \
+  --run-name o_lora_baseline \
+  --cl-method o_lora \
+  --cl-o-lora-lambda 0.5
+```
+
+| Parameter | Flag | Default | Description |
+|---|---|---|---|
+| Orthogonality weight | `--cl-o-lora-lambda` | 0.5 | Regularizer strength |
+
+### Dual-Heat
+
+Dual-Heat reduces catastrophic forgetting by combining:
 
 1. **Fast heat** — tracks short-term output magnitudes with an EMA + active decay.
    Neurons that were recently active get suppressed via **lateral inhibition**.
@@ -245,11 +332,10 @@ Dual-Heat is a continual learning method that reduces catastrophic forgetting by
 3. **Lateral inhibition** (optional) — divisive normalization of neuron outputs
    by the mean activity of all other neurons, promoting representational diversity.
 
-### Architecture
+#### Architecture
 
 Dual-Heat operates as a **CL method** (implementing the `CLMethod` interface in
-`cl_lora/cl_methods/dual_heat.py`). It composes with any LoRA init strategy
-(SLICE, LoRA-GA, LoRAM, vanilla). It registers:
+`cl_lora/cl_methods/dual_heat.py`). It registers:
 
 - **Forward hooks** on PEFT LoRA modules to track output magnitudes and optionally
   apply lateral inhibition
@@ -258,7 +344,7 @@ Dual-Heat operates as a **CL method** (implementing the `CLMethod` interface in
 The heat state is saved/loaded between tasks automatically via the existing
 `cl_method.save()` / `cl_method.load()` mechanism.
 
-### Hyperparameters
+#### Hyperparameters
 
 | Parameter | Flag | Default | Description |
 |---|---|---|---|
@@ -269,7 +355,7 @@ The heat state is saved/loaded between tasks automatically via the existing
 | Memory window | `--cl-dh-slow-window` | None | Effective memory steps (None = infinite) |
 | Lateral inhibition | `--cl-dh-no-lateral-inhibition` | Off | Disable lateral inhibition (EWC only) |
 
-### Usage with the orchestrator
+#### Usage with the orchestrator
 
 ```bash
 # Baseline (LoRA init + Dual-Heat)
@@ -296,10 +382,10 @@ python -m cl_lora.orchestrator \
   --cl-dh-no-lateral-inhibition
 ```
 
-## Qwen ~0.5B CL Experiment
+## Qwen CL Experiment
 
-A dedicated experiment runner validates Dual-Heat on a small LLM (Qwen 0.5B)
-with 4 controlled text classification tasks:
+A dedicated experiment runner validates CL methods on a small LLM (defaults to
+Qwen 2.5 0.5B) with 4 controlled text classification tasks:
 
 | Task | Domain | Classes | Examples |
 |---|---|---|---|
@@ -323,14 +409,24 @@ python -m cl_lora.qwen_experiment --method dual_heat --slow-strength 5.0
 # EWC only (no lateral inhibition)
 python -m cl_lora.qwen_experiment --method dual_heat --no-lateral-inhibition
 
+# O-LoRA comparison
+python -m cl_lora.qwen_experiment --method o_lora --o-lora-lambda 0.5
+
 # Compare all methods sequentially
 python -m cl_lora.qwen_experiment --compare-all
+
+# Custom model (any HuggingFace causal LM)
+python -m cl_lora.qwen_experiment --method dual_heat \
+  --model Qwen/Qwen2.5-0.5B-Instruct
 
 # Custom LoRA settings
 python -m cl_lora.qwen_experiment --method dual_heat \
   --lora-rank 32 --lora-alpha 16 \
   --lr 1e-4 --epochs 2 --batch-size 4
 ```
+
+The runner auto-detects GPU capability: uses fp16 on Pascal (CC < 7.0, e.g.
+GTX 1080 Ti, Titan Xp) and bf16 on Volta+.
 
 ### Output
 
@@ -354,7 +450,7 @@ DualHeat (strong EWC, beta=5.0)                ...        ...        ...
 
 - Python ≥ 3.10, CUDA-compatible GPU
 - `pip install -r requirements.txt` (includes `transformers`, `peft`, `accelerate`)
-- The Qwen model is downloaded from HuggingFace Hub on first run (~1 GB)
+- The model is downloaded from HuggingFace Hub on first run (~1 GB for Qwen 0.5B)
 
 ### Hardware expectations (approximate)
 
