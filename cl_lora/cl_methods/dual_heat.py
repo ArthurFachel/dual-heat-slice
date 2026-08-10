@@ -118,6 +118,14 @@ class _DualHeatModule(nn.Module):
         reduce_dims = tuple(range(output.dim() - 1))
         post_mag = output.detach().abs().mean(dim=reduce_dims)  # (out_features,)
 
+        # Ensure buffers are on the same device as post_mag
+        target_device = post_mag.device
+        if self.fast_heat.device != target_device:
+            self.fast_heat = self.fast_heat.to(target_device)
+            self.slow_heat = self.slow_heat.to(target_device)
+            self.slow_n = self.slow_n.to(target_device)
+            self._step = self._step.to(target_device)
+
         # Fast: EMA + decay ativo
         self.fast_heat.mul_(self.fast_decay).add_(
             post_mag, alpha=1.0 - self.fast_decay
