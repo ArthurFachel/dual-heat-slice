@@ -266,8 +266,7 @@ class DualHeatCLMethod(CLMethod):
                 dev = torch.device("cpu")
             dh_mod = dh_mod.to(dev)
 
-            # Register as a child so it shows up in module tree
-            self.add_module(f"dh_{name.replace('.', '_')}", dh_mod)
+            # Store in dict (CLMethod is not an nn.Module, so no add_module)
             self._dual_modules[name] = dh_mod
 
             # Forward hook (tracks heat, optionally applies lateral inhibition)
