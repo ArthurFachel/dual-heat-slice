@@ -19,7 +19,7 @@ model = model.to("cuda" if torch.cuda.is_available() else "cpu")
 model.eval()
 
 # Test 1: basic classification
-messages = [
+msgs = [
     {"role": "system", "content": "Classify the sentiment of the following movie review as 'positive' or 'negative'."},
     {"role": "user", "content": "Text: This movie was absolutely fantastic!"},
 ]
