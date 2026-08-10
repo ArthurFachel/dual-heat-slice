@@ -301,7 +301,7 @@ def train_one_task(
     try:
         cl_device = next(peft_model.parameters()).device
     except StopIteration:
-        cl_device = torch.device("cpu")
+        cl_device = torch.device("cuda")
     cl_method.post_train(
         peft_model,
         tokenizer=tokenizer,

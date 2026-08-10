@@ -185,7 +185,7 @@ def load_model_with_adapters(
         model = PeftModel.from_pretrained(model, adapter_path)
         init_correction_path = Path(adapter_path) / "init_correction.pt"
         if init_correction_path.exists():
-            init_correction = torch.load(str(init_correction_path), map_location="cpu", weights_only=True)
+            init_correction = torch.load(str(init_correction_path), map_location="cuda", weights_only=True)
             _apply_init_absorption(model, init_correction)
         model = model.merge_and_unload()
     return model
@@ -433,7 +433,7 @@ def train_on_task(
     try:
         cl_device = next(lora_model.parameters()).device
     except StopIteration:
-        cl_device = torch.device("cpu")
+        cl_device = torch.device("cuda")
     cl_method.post_train(
         lora_model,
         tokenizer=tokenizer,
