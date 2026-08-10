@@ -198,6 +198,9 @@ class DualHeatCLMethod(CLMethod):
             if dh_mod is None:
                 return grad
             scale = dh_mod.get_ewc_scale()  # (out_features,)
+            # Move scale to grad's device if needed
+            if scale.device != grad.device:
+                scale = scale.to(grad.device)
             # grad shape: (out_features, r)
             return grad * scale.view(-1, 1).to(dtype=grad.dtype, device=grad.device)
 
@@ -216,6 +219,14 @@ class DualHeatCLMethod(CLMethod):
             dh_mod = self._dual_modules.get(name)
             if dh_mod is None:
                 return output
+
+            # Ensure heat buffers are on the same device as module output
+            target_device = output.device
+            if dh_mod.fast_heat.device != target_device:
+                dh_mod.fast_heat = dh_mod.fast_heat.to(target_device)
+                dh_mod.slow_heat = dh_mod.slow_heat.to(target_device)
+                dh_mod.slow_n = dh_mod.slow_n.to(target_device)
+                dh_mod._step = dh_mod._step.to(target_device)
 
             output_to_track = output
 
