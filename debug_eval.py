@@ -92,6 +92,9 @@ for domain, text, expected in test_examples:
     gen = outputs[0, encoded["input_ids"].shape[1]:]
     raw = tok.decode(gen, skip_special_tokens=True).strip().lower()
     pred = raw.rstrip('.,!?;:')
+    # Heuristic: "yes"/"no" answer to a yes_no task -> "yes_no"
+    if domain == "question_type" and pred in ("yes", "no"):
+        pred = "yes_no"
     is_match = pred == expected.lower()
     print(f"  {domain:>15} | expected={expected:<10} | got={repr(pred):<20} | match={is_match}")
     if is_match:

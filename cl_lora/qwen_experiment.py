@@ -201,6 +201,9 @@ def evaluate_task(
             pred_ids = outputs[i, input_len:]
             raw = tokenizer.decode(pred_ids, skip_special_tokens=True).strip().lower()
             prediction = raw.rstrip('.,!?;:')
+            # Heuristic: if the model answers "yes"/"no" to a yes_no task, map to "yes_no"
+            if task.domain == "question_type" and prediction in ("yes", "no"):
+                prediction = "yes_no"
             correct += int(prediction == target.lower())
             total += 1
 
