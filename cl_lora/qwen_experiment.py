@@ -106,6 +106,10 @@ def load_qwen_model(
         pass
     model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
     model.config.use_cache = False
+    # Move to GPU 0 explicitly to prevent Trainer from wrapping in DataParallel
+    # (DataParallel causes device conflicts with DualHeat's registered hooks)
+    if device_map is None and torch.cuda.is_available():
+        model = model.to("cuda:0")
     return model
 
 
