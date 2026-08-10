@@ -1,5 +1,4 @@
-"""
-DualHeatCLMethod — Inibição lateral + EWC per-neuron para Continual Learning.
+"""DualHeatCLMethod — Inibição lateral + EWC per-neuron para Continual Learning.
 
 Baseado no DualHeat original (dual_heat_module.py) adaptado para o pipeline
 PEFT/LoRA deste projeto.
@@ -74,11 +73,12 @@ def _make_default_hyperparams() -> Dict[str, Any]:
 
 
 class _DualHeatModule(nn.Module):
-    """Container for one LoRA module's heat tracking state.
+    """Per-neuron heat tracking for one LoRA module.
 
-    Each instance manages fast_heat, slow_heat, and slow_n for one PEFT
-    LoRA linear module.  Registered as a child of the CLMethod so it is
-    discoverable for save/load.
+    Maintains fast_heat (short-term) and slow_heat (long-term) for each
+    output neuron.  Because hooks fire on different GPU replicas under
+    DataParallel, heat state is stored in a *per-device* dict so each
+    GPU replica gets its own independent buffers.
     """
 
     def __init__(
@@ -100,55 +100,89 @@ class _DualHeatModule(nn.Module):
         self.slow_window = slow_window
         self.lateral_inhibition = lateral_inhibition
 
-        # Fast heat (pós-inibição, com decay ativo)
-        self.register_buffer("fast_heat", torch.zeros(out_features))
-        # Slow heat (média amostral com janela limitada opcional)
-        self.register_buffer("slow_heat", torch.zeros(out_features))
-        self.register_buffer("slow_n", torch.ones(1, dtype=torch.long))
-        self.register_buffer("_step", torch.zeros(1, dtype=torch.long))
+        # Heat state keyed by device string:  str -> Dict[str, Tensor]
+        self._per_device: Dict[str, Dict[str, torch.Tensor]] = {}
+
+    # ── Per-device heat state access ──────────────────────────────
+
+    def _get_state(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        key = str(device)
+        if key not in self._per_device:
+            self._per_device[key] = {
+                "fast_heat": torch.zeros(self.out_features, device=device),
+                "slow_heat": torch.zeros(self.out_features, device=device),
+                "slow_n": torch.zeros((), device=device),
+                "step": torch.zeros((), dtype=torch.long, device=device),
+            }
+        return self._per_device[key]
 
     @torch.no_grad()
     def update_heat(self, output: torch.Tensor) -> None:
         """Update fast_heat and slow_heat from the current output.
 
         Called from the forward hook on each training step.
+        Lazily creates per-device buffers.
         """
-        # |output| médio sobre batch (e seq, se 3D)
-        # output shape: (..., out_features)
-        reduce_dims = tuple(range(output.dim() - 1))
-        post_mag = output.detach().abs().mean(dim=reduce_dims)  # (out_features,)
+        state = self._get_state(output.device)
 
-        # Ensure buffers are on the same device as post_mag
-        target_device = post_mag.device
-        if self.fast_heat.device != target_device:
-            self.fast_heat = self.fast_heat.to(target_device)
-            self.slow_heat = self.slow_heat.to(target_device)
-            self.slow_n = self.slow_n.to(target_device)
-            self._step = self._step.to(target_device)
+        reduce_dims = tuple(range(output.dim() - 1))
+        post_mag = output.detach().abs().mean(dim=reduce_dims)
 
         # Fast: EMA + decay ativo
-        self.fast_heat.mul_(self.fast_decay).add_(
-            post_mag, alpha=1.0 - self.fast_decay
+        state["fast_heat"].mul_(self.fast_decay).add_(
+            (1.0 - self.fast_decay) * post_mag, alpha=1.0
         ).sub_(self.fast_decay_rate).clamp_(min=0.0)
 
         # Slow: capped incremental mean
-        n_true = self.slow_n.item()
+        n_true = state["slow_n"].item()
         n_eff = min(n_true, self.slow_window) if self.slow_window is not None else n_true
-        self.slow_heat.add_((post_mag - self.slow_heat) / float(n_eff))
-        self.slow_n += 1
-        self._step += 1
+        state["slow_heat"].add_((post_mag - state["slow_heat"]) / float(n_eff))
+        state["slow_n"] += 1
+        state["step"] += 1
 
-    def get_ewc_scale(self) -> torch.Tensor:
+    def get_ewc_scale(self, device: torch.device) -> torch.Tensor:
         """Return per-neuron EWC scale: 1 / (1 + beta * slow_heat)."""
         if self.slow_strength <= 0.0:
-            return torch.ones(self.out_features, device=self.slow_heat.device)
-        return 1.0 / (1.0 + self.slow_strength * self.slow_heat)
+            return torch.ones(self.out_features, device=device)
+        state = self._get_state(device)
+        return 1.0 / (1.0 + self.slow_strength * state["slow_heat"])
+
+    def get_state_snapshot(self) -> Dict[str, torch.Tensor]:
+        """Return merged heat state for checkpointing.
+
+        Takes the first available device's state (all should be equivalent
+        after single-device training; under DataParallel, any device works).
+        """
+        if not self._per_device:
+            return {}
+        first = next(iter(self._per_device.values()))
+        return {
+            "fast_heat": first["fast_heat"].cpu().clone(),
+            "slow_heat": first["slow_heat"].cpu().clone(),
+            "slow_n": first["slow_n"].cpu().clone(),
+            "step": first["step"].cpu().clone(),
+        }
+
+    def load_state_snapshot(self, state: Dict[str, torch.Tensor]) -> None:
+        """Load heat state from a checkpoint onto CPU.
+
+        The tensors will be moved to the correct device on the next
+        forward call via _get_state().
+        """
+        if not state:
+            return
+        self._per_device["cpu"] = {
+            "fast_heat": state["fast_heat"].clone(),
+            "slow_heat": state["slow_heat"].clone(),
+            "slow_n": state["slow_n"].clone(),
+            "step": state["step"].clone() if "step" in state else torch.zeros((), dtype=torch.long),
+        }
 
     def extra_repr(self) -> str:
-        w = self.slow_window if self.slow_window is not None else "∞"
+        nd = len(self._per_device)
         return (
             f"out={self.out_features}, α={self.fast_decay}, γ={self.fast_strength}, "
-            f"δ={self.fast_decay_rate}, β={self.slow_strength}, slow_window={w}"
+            f"δ={self.fast_decay_rate}, β={self.slow_strength}, devices={nd}"
         )
 
 
@@ -187,13 +221,9 @@ class DualHeatCLMethod(CLMethod):
         self.slow_window = slow_window
         self.lateral_inhibition = bool(lateral_inhibition)
 
-        # _dual_modules: dict[module_name -> _DualHeatModule]
         self._dual_modules: Dict[str, _DualHeatModule] = {}
-        # Saved forward_hook_handle references for removal between stages
         self._fwd_handles: List[torch.utils.hooks.RemovableHandle] = []
         self._bwd_handles: List[torch.utils.hooks.RemovableHandle] = []
-
-        # Store active adapter name from pre_train for reuse in hooks
         self._active_adapter: str = "default"
 
     # ─── Hook lifecycle ────────────────────────────────────────────────
@@ -205,11 +235,8 @@ class DualHeatCLMethod(CLMethod):
             dh_mod = self._dual_modules.get(name)
             if dh_mod is None:
                 return grad
-            scale = dh_mod.get_ewc_scale()  # (out_features,)
-            # Move scale to grad's device if needed
-            if scale.device != grad.device:
-                scale = scale.to(grad.device)
-            # grad shape: (out_features, r)
+            # Resolve EWC scale on the grad's device (handles DataParallel)
+            scale = dh_mod.get_ewc_scale(grad.device)
             return grad * scale.view(-1, 1).to(dtype=grad.dtype, device=grad.device)
 
         return hook
@@ -228,23 +255,16 @@ class DualHeatCLMethod(CLMethod):
             if dh_mod is None:
                 return output
 
-            # Ensure heat buffers are on the same device as module output
-            target_device = output.device
-            if dh_mod.fast_heat.device != target_device:
-                dh_mod.fast_heat = dh_mod.fast_heat.to(target_device)
-                dh_mod.slow_heat = dh_mod.slow_heat.to(target_device)
-                dh_mod.slow_n = dh_mod.slow_n.to(target_device)
-                dh_mod._step = dh_mod._step.to(target_device)
-
             output_to_track = output
 
             # Lateral inhibition: output /= (1 + gamma * mean_others)
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 and out_features > 1 and module.training:
                 with torch.no_grad():
-                    fast_heat = dh_mod.fast_heat.to(output.device, output.dtype)
-                    sum_h = fast_heat.sum()
-                    mean_others = (sum_h - fast_heat) / float(out_features - 1)
-                    scale = 1.0 + dh_mod.fast_strength * mean_others  # (out_features,)
+                    state = dh_mod._get_state(output.device)
+                    fh = state["fast_heat"]
+                    sum_h = fh.sum()
+                    mean_others = (sum_h - fh) / float(out_features - 1)
+                    scale = 1.0 + dh_mod.fast_strength * mean_others
                     output = output / scale
                 output_to_track = output
 
@@ -258,7 +278,6 @@ class DualHeatCLMethod(CLMethod):
 
     def _register_hooks(self, lora_model: nn.Module) -> None:
         """Register forward and backward hooks on all active LoRA modules."""
-        # Remove any existing hooks first
         self._remove_hooks()
 
         self._dual_modules = {}
@@ -268,7 +287,6 @@ class DualHeatCLMethod(CLMethod):
         for name, mod, A_w, B_w, out_features in _iter_lora_modules(
             lora_model, active_adapter=self._active_adapter
         ):
-            # Create heat tracking state for this module
             dh_mod = _DualHeatModule(
                 out_features=out_features,
                 fast_decay=self.fast_decay,
@@ -278,30 +296,17 @@ class DualHeatCLMethod(CLMethod):
                 slow_window=self.slow_window,
                 lateral_inhibition=self.lateral_inhibition,
             )
-            # Move to model device
-            try:
-                dev = next(lora_model.parameters()).device
-            except StopIteration:
-                dev = torch.device("cpu")
-            dh_mod = dh_mod.to(dev)
-
-            # Store in dict (CLMethod is not an nn.Module, so no add_module)
             self._dual_modules[name] = dh_mod
 
-            # Forward hook (tracks heat, optionally applies lateral inhibition)
             fwd_hook = self._make_forward_hook(name, out_features)
             self._fwd_handles.append(mod.register_forward_hook(fwd_hook))
 
-            # Backward hook on lora_B.weight for EWC scaling
             bwd_hook = self._make_ewc_hook(name, B_w)
             self._bwd_handles.append(B_w.register_hook(bwd_hook))
 
-        logger.info(
-            "DualHeat hooks registered: %d modules", len(self._dual_modules)
-        )
+        logger.info("DualHeat hooks registered: %d modules", len(self._dual_modules))
 
     def _remove_hooks(self) -> None:
-        """Remove all registered hooks."""
         for h in self._fwd_handles:
             h.remove()
         self._fwd_handles.clear()
@@ -319,7 +324,6 @@ class DualHeatCLMethod(CLMethod):
         retain_tasks: Optional[List[Any]],
     ) -> None:
         """Register DualHeat hooks before training begins."""
-        # Detect the active adapter name from the PEFT model
         active = getattr(lora_model, "active_adapter", "default")
         if isinstance(active, (list, tuple)):
             active = active[0] if active else "default"
@@ -348,15 +352,12 @@ class DualHeatCLMethod(CLMethod):
         task_name: str,
     ) -> None:
         """Capture heat state after training completes (pre-merge)."""
-        heat_info = {
-            name: {
-                "slow_heat": dh_mod.slow_heat.detach().cpu().clone(),
-                "fast_heat": dh_mod.fast_heat.detach().cpu().clone(),
-                "slow_n": dh_mod.slow_n.detach().cpu().clone().item(),
-                "step": dh_mod._step.detach().cpu().clone().item(),
-            }
-            for name, dh_mod in self._dual_modules.items()
-        }
+        heat_info = {}
+        for name, dh_mod in self._dual_modules.items():
+            snapshot = dh_mod.get_state_snapshot()
+            if snapshot:
+                heat_info[name] = snapshot
+
         logger.info(
             "DualHeat post_train: stage=%d task=%s modules=%d",
             stage_idx,
@@ -364,35 +365,21 @@ class DualHeatCLMethod(CLMethod):
             len(heat_info),
         )
         self._train_heat_snapshot = heat_info
-
-        # Remove hooks — next stage will re-register
         self._remove_hooks()
 
     def save(self, state_dir: str) -> None:
-        """Persist DualHeat state between tasks.
-
-        Saves:
-          - Hyperparameters
-          - All dual module heat buffers (fast_heat, slow_heat, slow_n)
-          - Number of training steps accumulated
-        """
+        """Persist DualHeat state between tasks."""
         os.makedirs(state_dir, exist_ok=True)
         module_state = {}
         for name, dh_mod in self._dual_modules.items():
-            module_state[name] = {
-                "fast_heat": dh_mod.fast_heat.detach().cpu().clone(),
-                "slow_heat": dh_mod.slow_heat.detach().cpu().clone(),
-                "slow_n": dh_mod.slow_n.detach().cpu().clone(),
-                "_step": dh_mod._step.detach().cpu().clone(),
-            }
+            snapshot = dh_mod.get_state_snapshot()
+            if snapshot:
+                module_state[name] = snapshot
 
-        # Also include the snapshot from post_train (in case save is called
-        # after hooks are removed)
         snapshot = getattr(self, "_train_heat_snapshot", {})
-        if snapshot:
-            for name, info in snapshot.items():
-                if name not in module_state:
-                    module_state[name] = info
+        for name, info in snapshot.items():
+            if name not in module_state:
+                module_state[name] = {k: v.cpu().clone() if isinstance(v, torch.Tensor) else v for k, v in info.items()}
 
         payload = {
             "hyperparams": {
@@ -406,9 +393,7 @@ class DualHeatCLMethod(CLMethod):
             "module_state": module_state,
         }
         torch.save(payload, os.path.join(state_dir, "dual_heat_state.pt"))
-        logger.info(
-            "DualHeat state saved: modules=%d", len(module_state)
-        )
+        logger.info("DualHeat state saved: modules=%d", len(module_state))
 
     def load(self, state_dir: str) -> None:
         """Restore DualHeat state from a previous stage."""
@@ -426,16 +411,8 @@ class DualHeatCLMethod(CLMethod):
         self.slow_window = hp.get("slow_window", self.slow_window)
         self.lateral_inhibition = bool(hp.get("lateral_inhibition", self.lateral_inhibition))
 
-        module_state = payload.get("module_state", {})
-        # We cannot rebuild _dual_modules here because we don't have the
-        # model structure yet.  The state will be re-applied in pre_train()
-        # when hooks are registered.
-        self._loaded_module_state = module_state
-        logger.info(
-            "DualHeat state loaded: %d modules from %s",
-            len(module_state),
-            path,
-        )
+        self._loaded_module_state = payload.get("module_state", {})
+        logger.info("DualHeat state loaded: %d modules from %s", len(self._loaded_module_state), path)
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -449,14 +426,10 @@ class DualHeatCLMethod(CLMethod):
             "num_modules": len(self._dual_modules),
         }
 
-    # ─── Extended interface for pipeline ───────────────────────────────
+    # ─── Extended interface ───────────────────────────────────────────
 
     def restore_heat_state(self, lora_model: nn.Module) -> None:
-        """Apply loaded heat state to live _DualHeatModule instances.
-
-        Called from pre_train AFTER hooks are registered, so that heat
-        tracking from previous tasks carries forward.
-        """
+        """Apply loaded heat state to live _DualHeatModule instances."""
         loaded = getattr(self, "_loaded_module_state", None)
         if loaded is None:
             return
@@ -464,19 +437,12 @@ class DualHeatCLMethod(CLMethod):
             state = loaded.get(name)
             if state is None:
                 continue
-            with torch.no_grad():
-                dh_mod.fast_heat.copy_(state["fast_heat"].to(dh_mod.fast_heat.device))
-                dh_mod.slow_heat.copy_(state["slow_heat"].to(dh_mod.slow_heat.device))
-                dh_mod.slow_n.copy_(state["slow_n"].to(dh_mod.slow_n.device))
-                if "_step" in state:
-                    dh_mod._step.copy_(state["_step"].to(dh_mod._step.device))
-        # Clear the loaded state so it isn't applied twice
+            dh_mod.load_state_snapshot(state)
         self._loaded_module_state = None
         logger.info("DualHeat heat state restored: %d modules", len(self._dual_modules))
 
 
 # Patch pre_train to restore heat state after registration.
-# This is done here so DualHeatCLMethod remains self-contained.
 _original_pre_train = DualHeatCLMethod.pre_train
 
 def _patched_pre_train(self, lora_model, *, stage_idx, retain_tasks):
