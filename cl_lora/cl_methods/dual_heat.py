@@ -3,19 +3,26 @@
 Baseado no DualHeat original (dual_heat_module.py) adaptado para o pipeline
 PEFT/LoRA deste projeto.
 
+CORREÇÃO: O EWC hooka o tensor delta (contribuição LoRA), NÃO lora_B.weight.
+Isso garante proteção simétrica sobre A e B, equivalente ao MLP original.
+
 Algoritmo (por passo de treino):
-  1. z = Wx + b                          (pré-ativação)
-  2. output = z / (1 + γ·mean_others)    (inibição lateral divisiva, opcional)
-  3. fast_heat = max(0, α·|output| + (1-α)·fast_heat − δ)
-  4. slow_heat += (|output| − slow_heat) / min(n, W)  (capped incremental mean)
-  5. grad /= (1 + β·slow_heat)           (EWC gradient hook em lora_B.weight)
+  1. base = W_base(x) + b_base           (pré-treinado, congelado)
+  2. delta = scaling · B(A(x))            (adaptador LoRA)
+  3. z = base + delta                     (saída combinada)
+  4. output = z / (1 + γ·mean_others)     (inibição lateral divisiva, opcional)
+  5. fast_heat = max(0, α·|output| + (1-α)·fast_heat − δ)
+  6. slow_heat += (|output| − slow_heat) / min(n, W)  (capped incremental mean)
+  7. backward: grad(delta) /= (1 + β·slow_heat)
+     → via chain rule, tanto B quanto A recebem gradiente escalado
 
 Referência:
     dual_heat_module.py — v3: Inibição lateral + decay ativo + pós-inibição + EWC
     + slow heat com memória limitada (forgetting)
+    dual_heat_LoRA_module.py — Hook no tensor delta (proteção simétrica)
 
 Integração no pipeline:
-    pre_train()  → registra hooks forward + backward nos módulos LoRA
+    pre_train()  → substitui forward dos módulos LoRA (EWC + lateral inhibition)
     aux_loss()   → None (DualHeat não usa loss aditivo)
     post_train() → captura estado final para persistência
     save/load()  → persiste/restaura heat state entre tasks
@@ -235,66 +242,95 @@ class DualHeatCLMethod(CLMethod):
         self.lateral_inhibition = bool(lateral_inhibition)
 
         self._dual_modules: Dict[str, _DualHeatModule] = {}
-        self._fwd_handles: List[torch.utils.hooks.RemovableHandle] = []
-        self._bwd_handles: List[torch.utils.hooks.RemovableHandle] = []
+        self._orig_forwards: List[callable] = []
+        self._patched_modules: List[nn.Module] = []
         self._active_adapter: str = "default"
 
     # ─── Hook lifecycle ────────────────────────────────────────────────
 
-    def _make_ewc_hook(self, name: str, B_w: nn.Parameter):
-        """Create a backward hook that scales lora_B's gradient per output neuron."""
+    def _make_ewc_hook_on_delta(self, name: str):
+        """Create a backward hook for the delta tensor (NOT lora_B.weight).
 
+        This hook is registered on the delta tensor during the forward pass.
+        It scales the gradient per output neuron, and via the chain rule
+        both lora_B and lora_A receive the scaled gradient — equivalent to
+        the original DualHeat hook on self.weight.
+
+        Grad shape: (..., out_features) — scale broadcasts over last dim.
+        """
         def hook(grad: torch.Tensor) -> torch.Tensor:
             dh_mod = self._dual_modules.get(name)
             if dh_mod is None:
                 return grad
-            # Resolve EWC scale on the grad's device (handles DataParallel)
             scale = dh_mod.get_ewc_scale(grad.device, dtype=grad.dtype)
-            return grad * scale.view(-1, 1).to(dtype=grad.dtype, device=grad.device)
+            return grad * scale  # broadcast over (..., out_features)
 
         return hook
 
-    def _make_forward_hook(self, name: str, out_features: int):
-        """Create a forward hook that applies lateral inhibition and tracks heat.
+    def _make_patched_forward(self, name: str, out_features: int, dh_mod):
+        """Create a patched forward method for a LoRA module.
 
-        This hook is registered on the output of the LoRA module's forward pass.
-        It:
-          1. (Optional) applies lateral inhibition to the combined output
-          2. Tracks |output| magnitudes for fast_heat/slow_heat updates
+        This replaces the PEFT module's forward to:
+          1. Compute delta = scaling * B(A(x)) for each active adapter
+          2. Register EWC hook on delta (not on lora_B.weight)
+          3. Apply lateral inhibition on the full output (base + delta)
+          4. Track heat magnitudes
         """
+        def patched_forward(mod_self, x, *args, **kwargs):
+            # ── Base layer forward ──────────────────────────────────────
+            # mod_self is the PEFT Linear (the module whose forward we patch)
+            result = mod_self.base_layer(x, *args, **kwargs)
 
-        def hook(module, inputs, output):
-            dh_mod = self._dual_modules.get(name)
-            if dh_mod is None:
-                return output
+            # ── LoRA adapters with EWC hook on delta ───────────────────
+            for adapter in mod_self.active_adapters:
+                if adapter not in mod_self.lora_A:
+                    continue
+                lora_A = mod_self.lora_A[adapter]
+                lora_B = mod_self.lora_B[adapter]
+                dropout = mod_self.lora_dropout.get(adapter, lambda x: x)
+                scaling = mod_self.scaling[adapter]
 
-            output_to_track = output
+                x_for_lora = dropout(x)
+                lora_A_out = lora_A(x_for_lora)
+                delta = lora_B(lora_A_out) * scaling
 
-            # Lateral inhibition: output /= (1 + gamma * mean_others)
-            if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 and out_features > 1 and module.training:
-                state = dh_mod._get_or_restore(output.device, dtype=output.dtype)
+                # Register EWC hook on delta (NOT on lora_B.weight)
+                if dh_mod.slow_strength > 0.0 and delta.requires_grad:
+                    delta.register_hook(self._make_ewc_hook_on_delta(name))
+
+                result = result + delta
+
+            # ── Lateral inhibition ──────────────────────────────────────
+            if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 \
+                    and out_features > 1 and mod_self.training:
+                state = dh_mod._get_or_restore(result.device, dtype=result.dtype)
                 fh = state["fast_heat"]
                 sum_h = fh.sum()
                 mean_others = (sum_h - fh) / float(out_features - 1)
                 scale = 1.0 + dh_mod.fast_strength * mean_others
-                output = output / scale
-                output_to_track = output
+                result = result / scale
 
-            # Track heat (only in training mode)
-            if module.training:
-                dh_mod.update_heat(output_to_track)
+            # ── Heat tracking ───────────────────────────────────────────
+            if mod_self.training:
+                dh_mod.update_heat(result)
 
-            return output
+            return result
 
-        return hook
+        return patched_forward
 
-    def _register_hooks(self, lora_model: nn.Module) -> None:
-        """Register forward and backward hooks on all active LoRA modules."""
-        self._remove_hooks()
+    def _register_patched_forward(self, lora_model: nn.Module) -> None:
+        """Replace each LoRA module's forward with a patched version.
+
+        The patched forward includes:
+          - EWC hook on the delta tensor (protects A and B)
+          - Lateral inhibition on the full output
+          - Heat magnitude tracking
+        """
+        self._remove_patched_forward()
 
         self._dual_modules = {}
-        self._fwd_handles = []
-        self._bwd_handles = []
+        self._orig_forwards: List[callable] = []
+        self._patched_modules: List[nn.Module] = []
 
         for name, mod, A_w, B_w, out_features in _iter_lora_modules(
             lora_model, active_adapter=self._active_adapter
@@ -310,21 +346,19 @@ class DualHeatCLMethod(CLMethod):
             )
             self._dual_modules[name] = dh_mod
 
-            fwd_hook = self._make_forward_hook(name, out_features)
-            self._fwd_handles.append(mod.register_forward_hook(fwd_hook))
+            # Save original forward and replace with patched version
+            self._orig_forwards.append(mod.forward)
+            self._patched_modules.append(mod)
+            mod.forward = self._make_patched_forward(name, out_features, dh_mod)
 
-            bwd_hook = self._make_ewc_hook(name, B_w)
-            self._bwd_handles.append(B_w.register_hook(bwd_hook))
+        logger.info("DualHeat patched forwards registered: %d modules", len(self._dual_modules))
 
-        logger.info("DualHeat hooks registered: %d modules", len(self._dual_modules))
-
-    def _remove_hooks(self) -> None:
-        for h in self._fwd_handles:
-            h.remove()
-        self._fwd_handles.clear()
-        for h in self._bwd_handles:
-            h.remove()
-        self._bwd_handles.clear()
+    def _remove_patched_forward(self) -> None:
+        """Restore original forward methods on all patched modules."""
+        for mod, orig_fwd in zip(self._patched_modules, self._orig_forwards):
+            mod.forward = orig_fwd
+        self._orig_forwards.clear()
+        self._patched_modules.clear()
 
     # ─── CLMethod interface ────────────────────────────────────────────
 
@@ -335,13 +369,13 @@ class DualHeatCLMethod(CLMethod):
         stage_idx: int,
         retain_tasks: Optional[List[Any]],
     ) -> None:
-        """Register DualHeat hooks before training begins."""
+        """Patch LoRA module forward methods with DualHeat logic."""
         active = getattr(lora_model, "active_adapter", "default")
         if isinstance(active, (list, tuple)):
             active = active[0] if active else "default"
         self._active_adapter = str(active)
 
-        self._register_hooks(lora_model)
+        self._register_patched_forward(lora_model)
         logger.info(
             "DualHeat pre_train: stage=%d retain_tasks=%s modules=%d",
             stage_idx,
@@ -349,8 +383,7 @@ class DualHeatCLMethod(CLMethod):
             len(self._dual_modules),
         )
 
-        # Restore heat state after registration (unified with pre_train,
-        # no monkey-patch needed).
+        # Restore heat state after registration
         self.restore_heat_state(lora_model)
 
     def aux_loss(self, lora_model: torch.nn.Module) -> Optional[torch.Tensor]:
@@ -381,7 +414,7 @@ class DualHeatCLMethod(CLMethod):
             len(heat_info),
         )
         self._train_heat_snapshot = heat_info
-        self._remove_hooks()
+        self._remove_patched_forward()
 
     def save(self, state_dir: str) -> None:
         """Persist DualHeat state between tasks."""
