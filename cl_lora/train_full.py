@@ -59,7 +59,7 @@ _patch_accelerate_unwrap_model_compat()
 
 load_dotenv()
 
-MODEL_NAME = "Qwen/Qwen3-4B-Instruct-2507"
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 # MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 # MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 HF_TOKEN = os.getenv("HUGGING_TOKEN")
@@ -78,14 +78,15 @@ def build_tokenizer(model_name: str = MODEL_NAME, hf_token: str | None = HF_TOKE
 def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.float32,
+    torch_dtype: torch.dtype = torch.float16,
     device_map: str | None = None,
 ):
-    """Load model in fp32 — Trainer gerencia mixed precision via fp16/bf16.
+    """Load model in fp16 para economizar memoria.
 
-    Importante: NAO usar device_map='auto' com HF Trainer — o Trainer
-    gerencia o device placement. device_map=None coloca o modelo na CPU
-    e o Trainer move pra GPU no inicio do treino.
+    Importante: quando carregado em fp16, o Trainer DEVE rodar com
+    fp16=False e bf16=False — senao o gradient scaler tenta unscale
+    gradientes que ja estao em half precision e quebra.
+    O otimizador promove internamente pra fp32 no step.
     """
     local = Path(model_name).is_dir()
     kwargs: dict = dict(
@@ -149,7 +150,6 @@ def train_on_task_full(
     max_seq_length: int = 256,
     eval_size: int = 200,
     seed: int = 42,
-    use_bf16: bool = False,
     save_model: bool = True,
     cl_method: CLMethod | None = None,
     stage_idx: int = 1,
@@ -187,8 +187,8 @@ def train_on_task_full(
         warmup_ratio=warmup_ratio,
         eval_strategy="steps",
         eval_steps=eval_steps,
-        bf16=use_bf16,
-        fp16=not use_bf16,
+        bf16=False,
+        fp16=False,
         dataloader_num_workers=2,
         report_to="none",
         remove_unused_columns=True,

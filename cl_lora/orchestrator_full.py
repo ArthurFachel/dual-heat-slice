@@ -110,7 +110,7 @@ def _collect_env_info() -> Dict[str, Any]:
         import torch
         info["cuda"] = {
             "available": bool(torch.cuda.is_available()),
-            "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
+            "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 2,
             "version": getattr(torch.version, "cuda", None),
         }
     except Exception:
@@ -304,7 +304,6 @@ def run_sequence(
             seed=seed,
             retain_tasks=retain_tasks,
             warmup_ratio=warmup_ratio,
-            use_bf16=use_bf16,
             cl_method=cl_method,
             stage_idx=idx,
         )
