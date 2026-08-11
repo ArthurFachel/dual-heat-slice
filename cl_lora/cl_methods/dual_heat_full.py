@@ -31,9 +31,12 @@ from .base import CLMethod
 logger = logging.getLogger("cl_lora.cl_methods.dual_heat_full")
 
 
-# ── Target module patterns para Qwen 2.5 0.5B ────────────────────────
-# Queries, Keys, Values, Output, Gate, Up, Down projections
+# ── Target module patterns — covered architectures ────────────────
+# LLaMA/Mistral/Qwen: self_attn.q_proj, mlp.gate_proj etc.
+# GPTNeo: attn.attention.q_proj, mlp.c_fc etc.
+# GPT2: attn.c_attn, attn.c_proj, mlp.c_fc, mlp.c_proj
 TARGET_MODULE_PATTERNS = [
+    # LLaMA/Qwen-style
     "self_attn.q_proj",
     "self_attn.k_proj",
     "self_attn.v_proj",
@@ -41,7 +44,58 @@ TARGET_MODULE_PATTERNS = [
     "mlp.gate_proj",
     "mlp.up_proj",
     "mlp.down_proj",
+    # GPTNeo-style
+    "attn.attention.q_proj",
+    "attn.attention.k_proj",
+    "attn.attention.v_proj",
+    "attn.attention.out_proj",
+    # GPT2-style (combined QKV)
+    "attn.c_attn",
+    "attn.c_proj",
+    "mlp.c_fc",
+    "mlp.c_proj",
 ]
+
+
+def infer_target_patterns(model: nn.Module) -> List[str]:
+    """Auto-detect target patterns from model architecture.
+
+    Examines the model's named modules to find attention and MLP
+    projection layers, returning appropriate patterns.
+
+    Falls back to TARGET_MODULE_PATTERNS if detection fails.
+    """
+    model_type = getattr(getattr(model, "config", None), "model_type", "").lower()
+
+    if model_type in ("llama", "mistral", "qwen2", "qwen3", "gemma", "phi3"):
+        return [
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+            "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj",
+        ]
+    if model_type in ("gpt_neo", "gpt_neox"):
+        return [
+            "attn.attention.q_proj", "attn.attention.k_proj",
+            "attn.attention.v_proj", "attn.attention.out_proj",
+            "mlp.c_fc", "mlp.c_proj",
+        ]
+    if model_type == "gpt2":
+        return [
+            "attn.c_attn", "attn.c_proj",
+            "mlp.c_fc", "mlp.c_proj",
+        ]
+    if model_type in ("opt",):
+        return [
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+            "self_attn.out_proj", "mlp.fc1", "mlp.fc2",
+        ]
+
+    # Fallback: find all nn.Linear that look like attention/MLP weights
+    # (not embedding, lm_head, or layer_norm)
+    logger.warning(
+        "Unknown model_type=%r — falling back to heuristic detection",
+        model_type,
+    )
+    return list(TARGET_MODULE_PATTERNS)
 
 
 def _is_target_module(name: str, patterns: List[str] | None = None) -> bool:
@@ -388,6 +442,14 @@ class DualHeatFullCLMethod(CLMethod):
         Args:
             model: O modelo completo (nao PEFT). Deve ter target nn.Linear layers.
         """
+        # Auto-detect patterns if using defaults (not explicitly set by user)
+        if self.target_module_patterns == TARGET_MODULE_PATTERNS or self.target_module_patterns is None:
+            detected = infer_target_patterns(model)
+            if detected != TARGET_MODULE_PATTERNS:
+                logger.info("DualHeatFull: auto-detected patterns for %s: %s",
+                            getattr(getattr(model, 'config', None), 'model_type', '?'), detected)
+                self.target_module_patterns = detected
+
         self._register_patched_forward(model)
         logger.info(
             "DualHeatFull pre_train: stage=%d retain_tasks=%s modules=%d",
