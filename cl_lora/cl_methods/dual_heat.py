@@ -267,7 +267,7 @@ class DualHeatCLMethod(CLMethod):
 
         return hook
 
-    def _make_patched_forward(self, name: str, out_features: int, dh_mod):
+    def _make_patched_forward(self, name: str, out_features: int, dh_mod, mod: nn.Module):
         """Create a patched forward method for a LoRA module.
 
         This replaces the PEFT module's forward to:
@@ -276,19 +276,18 @@ class DualHeatCLMethod(CLMethod):
           3. Apply lateral inhibition on the full output (base + delta)
           4. Track heat magnitudes
         """
-        def patched_forward(mod_self, x, *args, **kwargs):
+        def patched_forward(x, *args, **kwargs):
             # ── Base layer forward ──────────────────────────────────────
-            # mod_self is the PEFT Linear (the module whose forward we patch)
-            result = mod_self.base_layer(x, *args, **kwargs)
+            result = mod.base_layer(x, *args, **kwargs)
 
             # ── LoRA adapters with EWC hook on delta ───────────────────
-            for adapter in mod_self.active_adapters:
-                if adapter not in mod_self.lora_A:
+            for adapter in mod.active_adapters:
+                if adapter not in mod.lora_A:
                     continue
-                lora_A = mod_self.lora_A[adapter]
-                lora_B = mod_self.lora_B[adapter]
-                dropout = mod_self.lora_dropout.get(adapter, lambda x: x)
-                scaling = mod_self.scaling[adapter]
+                lora_A = mod.lora_A[adapter]
+                lora_B = mod.lora_B[adapter]
+                dropout = mod.lora_dropout.get(adapter, lambda x: x)
+                scaling = mod.scaling[adapter]
 
                 x_for_lora = dropout(x)
                 lora_A_out = lora_A(x_for_lora)
@@ -302,7 +301,7 @@ class DualHeatCLMethod(CLMethod):
 
             # ── Lateral inhibition ──────────────────────────────────────
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 \
-                    and out_features > 1 and mod_self.training:
+                    and out_features > 1 and mod.training:
                 state = dh_mod._get_or_restore(result.device, dtype=result.dtype)
                 fh = state["fast_heat"]
                 sum_h = fh.sum()
@@ -311,7 +310,7 @@ class DualHeatCLMethod(CLMethod):
                 result = result / scale
 
             # ── Heat tracking ───────────────────────────────────────────
-            if mod_self.training:
+            if mod.training:
                 dh_mod.update_heat(result)
 
             return result
@@ -349,7 +348,7 @@ class DualHeatCLMethod(CLMethod):
             # Save original forward and replace with patched version
             self._orig_forwards.append(mod.forward)
             self._patched_modules.append(mod)
-            mod.forward = self._make_patched_forward(name, out_features, dh_mod)
+            mod.forward = self._make_patched_forward(name, out_features, dh_mod, mod)
 
         logger.info("DualHeat patched forwards registered: %d modules", len(self._dual_modules))
 
