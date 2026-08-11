@@ -79,20 +79,22 @@ def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
     torch_dtype: torch.dtype = torch.float32,
-    device_map: str = "auto",
+    device_map: str | None = None,
 ):
     """Load model in fp32 — Trainer gerencia mixed precision via fp16/bf16.
 
-    Importante: NAO carregar em fp16/bf16 diretamente, senao o gradient
-    scaler do Trainer falha com 'Attempting to unscale FP16 gradients'.
+    Importante: NAO usar device_map='auto' com HF Trainer — o Trainer
+    gerencia o device placement. device_map=None coloca o modelo na CPU
+    e o Trainer move pra GPU no inicio do treino.
     """
     local = Path(model_name).is_dir()
     kwargs: dict = dict(
         torch_dtype=torch_dtype,
-        device_map=device_map,
         token=hf_token,
         local_files_only=local,
     )
+    if device_map is not None:
+        kwargs["device_map"] = device_map
     try:
         import flash_attn  # noqa: F401
         kwargs["attn_implementation"] = "flash_attention_2"

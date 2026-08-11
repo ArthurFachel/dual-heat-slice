@@ -444,8 +444,8 @@ def main():
     # Training
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--epochs", type=float, default=3.0)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--grad-accum", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--max-seq-length", type=int, default=256)
     parser.add_argument("--warmup-ratio", type=float, default=0.01)
     parser.add_argument("--eval-size", type=int, default=200)
