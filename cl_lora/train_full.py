@@ -78,9 +78,14 @@ def build_tokenizer(model_name: str = MODEL_NAME, hf_token: str | None = HF_TOKE
 def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.float16,
+    torch_dtype: torch.dtype = torch.float32,
     device_map: str = "auto",
 ):
+    """Load model in fp32 — Trainer gerencia mixed precision via fp16/bf16.
+
+    Importante: NAO carregar em fp16/bf16 diretamente, senao o gradient
+    scaler do Trainer falha com 'Attempting to unscale FP16 gradients'.
+    """
     local = Path(model_name).is_dir()
     kwargs: dict = dict(
         torch_dtype=torch_dtype,

@@ -157,6 +157,7 @@ def run_sequence(
     save_final_model: bool,
     resume: bool,
     warmup_ratio: float,
+    use_bf16: bool = False,
     # No LoRA params — full fine-tuning
     keep_all_checkpoints: bool = False,
     general_eval_strategy: str = "every_stage",
@@ -172,6 +173,7 @@ def run_sequence(
         sequence_name: Name of the task sequence (e.g. 'NI-Seq-G2')
         model_name: HuggingFace model name or path
         cl_method_name: 'vanilla' (no protection) or 'dual_heat_full'
+        use_bf16: Use bfloat16 if available (Pascal GPUs nao suportam, use fp16)
     """
     set_global_seed(seed)
     run_output_dir = run_output_dir.resolve()
@@ -193,6 +195,7 @@ def run_sequence(
         "cl_method": str(cl_method_name),
         "cl_method_kwargs": dict(cl_method_kwargs or {}),
         "training_type": "full_finetune",
+        "use_bf16": bool(use_bf16),
     }
 
     run_cfg_payload: Dict[str, Any] = {
@@ -301,6 +304,7 @@ def run_sequence(
             seed=seed,
             retain_tasks=retain_tasks,
             warmup_ratio=warmup_ratio,
+            use_bf16=use_bf16,
             cl_method=cl_method,
             stage_idx=idx,
         )
@@ -510,6 +514,7 @@ def main():
         save_final_model=args.save_final_model,
         resume=args.resume,
         warmup_ratio=args.warmup_ratio,
+        use_bf16=args.use_bf16,
         cl_method_name=args.method,
         cl_method_kwargs=cl_kwargs,
     )
