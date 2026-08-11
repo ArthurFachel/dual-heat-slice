@@ -328,34 +328,25 @@ def run_sequence(
         elif general_eval_strategy == "last_only":
             run_general = is_final_stage
 
-        # Evaluate on seen tasks
+        # Evaluate (seen tasks + general tasks, handled internally by evaluate_all)
         print(f"  Evaluating on {len(eval_seen)} seen tasks...")
-        seen_scores = evaluate_all(
-            model=model,
-            tokenizer=tokenizer,
-            tasks=eval_seen,
+        evaluation = evaluate_all(
+            model,
+            tokenizer,
+            eval_seen,
+            output_dir=str(stage_eval_dir),
+            general_eval_task_keys=general_eval_keys,
             eval_size=eval_size,
+            task_eval_samples=task_eval_samples,
+            task_eval_max_new_tokens=task_eval_max_new_tokens,
+            quick_eval=quick_eval,
             seed=seed,
-            num_samples=task_eval_samples,
-            max_new_tokens=task_eval_max_new_tokens,
         )
+        seen_scores = evaluation.get("seen_tasks", {})
+        general_scores = evaluation.get("general", {"gp": {}, "ip": {}, "gp_mean": None, "ip_mean": None, "mode": "skipped"})
         print(f"  Seen-task scores: {seen_scores}")
-
-        # Evaluate on general tasks
-        general_scores = {}
-        if run_general and not quick_eval:
-            if general_eval_keys:
-                print(f"  Evaluating on general tasks...")
-                general_scores = evaluate_all(
-                    model=model,
-                    tokenizer=tokenizer,
-                    tasks=GENERAL_EVAL_TASKS if "all" in general_eval_keys else general_eval_keys,
-                    eval_size=eval_size,
-                    seed=seed,
-                    num_samples=task_eval_samples,
-                    max_new_tokens=task_eval_max_new_tokens,
-                )
-                print(f"  General-task scores: {general_scores}")
+        if general_scores.get("gp") or general_scores.get("ip"):
+            print(f"  General-task scores: GP={general_scores.get('gp_mean', 'N/A'):.4f} IP={general_scores.get('ip_mean', 'N/A'):.4f}")
 
         stage_record = {
             "stage_idx": idx,
