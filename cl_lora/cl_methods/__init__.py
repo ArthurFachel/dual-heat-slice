@@ -10,6 +10,7 @@ from typing import Any, Dict, Type
 
 from .base import CLMethod
 from .dual_heat import DualHeatCLMethod
+from .dual_heat_full import DualHeatFullCLMethod
 from .o_lora import OLoRAMethod
 from .vanilla import VanillaCLMethod
 
@@ -18,6 +19,7 @@ REGISTRY: Dict[str, Type[CLMethod]] = {
     "vanilla": VanillaCLMethod,
     "o_lora": OLoRAMethod,
     "dual_heat": DualHeatCLMethod,
+    "dual_heat_full": DualHeatFullCLMethod,
 }
 
 
