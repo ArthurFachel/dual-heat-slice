@@ -1,0 +1,788 @@
+{
+  "sequence": "NI-Seq-G2",
+  "description": "Pure generation sequence 2: SentComp \u2192 OddManOut \u2192 OhSUMED \u2192 SyntheticExec \u2192 Quoref",
+  "task_order": [
+    "task1355_sent_comp_summarization",
+    "task141_odd-man-out_classification_category",
+    "task619_ohsumed_abstract_title_generation",
+    "task163_count_words_ending_with_letter",
+    "task002_quoref_answer_generation"
+  ],
+  "general_eval_keys": [],
+  "stage_records": [
+    {
+      "stage_idx": 1,
+      "task_name": "task1355_sent_comp_summarization",
+      "train_report": {
+        "task_name": "task1355_sent_comp_summarization",
+        "train_metrics": {
+          "train_runtime": 58.9787,
+          "train_samples_per_second": 40.642,
+          "train_steps_per_second": 1.272,
+          "total_flos": 70595809210368.0,
+          "train_loss": 2.5631339009602865,
+          "epoch": 3.0
+        },
+        "eval_metrics": {
+          "eval_loss": 2.0753426551818848,
+          "eval_runtime": 2.1789,
+          "eval_samples_per_second": 91.789,
+          "eval_steps_per_second": 11.474,
+          "epoch": 3.0
+        },
+        "learning_rate": 5e-05,
+        "num_train_epochs": 3.0,
+        "warmup_ratio": 0.01,
+        "per_device_train_batch_size": 16,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 2,
+        "max_seq_length": 256,
+        "seed": 42,
+        "stage_idx": 1,
+        "model_name": "roneneldan/TinyStories-33M",
+        "total_params": 68514048,
+        "trainable_params": 68514048
+      },
+      "seen_scores": {
+        "task1355_sent_comp_summarization": {
+          "score": 0.058186462763217574,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.058186462763217574,
+          "n_samples": 50
+        }
+      },
+      "general_scores": {
+        "gp": {
+          "hellaswag": 0.27504481179047996,
+          "commonsenseqa": 0.2072072072072072,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.07532303077067161
+        },
+        "ip": {
+          "hellaswag": 0.26160127464648475,
+          "commonsenseqa": 0.19656019656019655,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.04461605781259574
+        },
+        "gp_mean": 0.1393937624420897,
+        "ip_mean": 0.12569438225481927,
+        "resolved_tasks": [
+          "hellaswag",
+          "commonsense_qa",
+          "bbh_cot_fewshot_object_counting"
+        ],
+        "skipped_tasks": [],
+        "ip_fewshot_used": {
+          "hellaswag": 5,
+          "commonsense_qa": 5,
+          "bbh_cot_fewshot_object_counting": 3
+        },
+        "raw": {
+          "gp": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.27185819557857,
+              "acc_stderr,none": 0.0044400791732768724,
+              "acc_norm,none": 0.27504481179047996,
+              "acc_norm_stderr,none": 0.004456242601950599
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.2072072072072072,
+              "acc_stderr,none": 0.011603856781422624
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          },
+          "ip": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.26707827126070505,
+              "acc_stderr,none": 0.004415293656599343,
+              "acc_norm,none": 0.26160127464648475,
+              "acc_norm_stderr,none": 0.004386083683839967
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.19656019656019655,
+              "acc_stderr,none": 0.011377439773963867
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "stage_idx": 2,
+      "task_name": "task141_odd-man-out_classification_category",
+      "train_report": {
+        "task_name": "task141_odd-man-out_classification_category",
+        "train_metrics": {
+          "train_runtime": 352.2384,
+          "train_samples_per_second": 53.657,
+          "train_steps_per_second": 1.678,
+          "total_flos": 446811562561536.0,
+          "train_loss": 0.25154008478077533,
+          "epoch": 3.0
+        },
+        "eval_metrics": {
+          "eval_loss": 0.16297006607055664,
+          "eval_runtime": 1.951,
+          "eval_samples_per_second": 102.511,
+          "eval_steps_per_second": 12.814,
+          "epoch": 3.0
+        },
+        "learning_rate": 5e-05,
+        "num_train_epochs": 3.0,
+        "warmup_ratio": 0.01,
+        "per_device_train_batch_size": 16,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 2,
+        "max_seq_length": 256,
+        "seed": 42,
+        "stage_idx": 2,
+        "model_name": "roneneldan/TinyStories-33M",
+        "total_params": 68514048,
+        "trainable_params": 68514048
+      },
+      "seen_scores": {
+        "task1355_sent_comp_summarization": {
+          "score": 0.0,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0,
+          "n_samples": 50
+        },
+        "task141_odd-man-out_classification_category": {
+          "score": 0.01282051282051282,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.01282051282051282,
+          "n_samples": 50
+        }
+      },
+      "general_scores": {
+        "gp": {
+          "hellaswag": 0.2678749253136825,
+          "commonsenseqa": 0.21457821457821458,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.0057039951663620655
+        },
+        "ip": {
+          "hellaswag": 0.2582154949213304,
+          "commonsenseqa": 0.20556920556920558,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.00013157894736842105
+        },
+        "gp_mean": 0.12203928376456478,
+        "ip_mean": 0.11597906985947609,
+        "resolved_tasks": [
+          "hellaswag",
+          "commonsense_qa",
+          "bbh_cot_fewshot_object_counting"
+        ],
+        "skipped_tasks": [],
+        "ip_fewshot_used": {
+          "hellaswag": 5,
+          "commonsense_qa": 5,
+          "bbh_cot_fewshot_object_counting": 3
+        },
+        "raw": {
+          "gp": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2640908185620394,
+              "acc_stderr,none": 0.0043994691682725275,
+              "acc_norm,none": 0.2678749253136825,
+              "acc_norm_stderr,none": 0.004419469983938969
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.21457821457821458,
+              "acc_stderr,none": 0.011753423094216953
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          },
+          "ip": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.26419040031866164,
+              "acc_stderr,none": 0.00440000082274176,
+              "acc_norm,none": 0.2582154949213304,
+              "acc_norm_stderr,none": 0.004367586801776807
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.20556920556920558,
+              "acc_stderr,none": 0.011569834551534352
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "stage_idx": 3,
+      "task_name": "task619_ohsumed_abstract_title_generation",
+      "train_report": {
+        "task_name": "task619_ohsumed_abstract_title_generation",
+        "train_metrics": {
+          "train_runtime": 76.4946,
+          "train_samples_per_second": 41.532,
+          "train_steps_per_second": 1.333,
+          "total_flos": 138314155032576.0,
+          "train_loss": 4.92791457269706,
+          "epoch": 3.0
+        },
+        "eval_metrics": {
+          "eval_loss": 4.627353668212891,
+          "eval_runtime": 2.0234,
+          "eval_samples_per_second": 98.842,
+          "eval_steps_per_second": 12.355,
+          "epoch": 3.0
+        },
+        "learning_rate": 5e-05,
+        "num_train_epochs": 3.0,
+        "warmup_ratio": 0.01,
+        "per_device_train_batch_size": 16,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 2,
+        "max_seq_length": 256,
+        "seed": 42,
+        "stage_idx": 3,
+        "model_name": "roneneldan/TinyStories-33M",
+        "total_params": 68514048,
+        "trainable_params": 68514048
+      },
+      "seen_scores": {
+        "task1355_sent_comp_summarization": {
+          "score": 0.04516616417175646,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.04516616417175646,
+          "n_samples": 50
+        },
+        "task141_odd-man-out_classification_category": {
+          "score": 0.00189520624303233,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.00189520624303233,
+          "n_samples": 50
+        },
+        "task619_ohsumed_abstract_title_generation": {
+          "score": 0.054583474753032074,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.054583474753032074,
+          "n_samples": 50
+        }
+      },
+      "general_scores": {
+        "gp": {
+          "hellaswag": 0.27922724556861184,
+          "commonsenseqa": 0.19492219492219492,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.0540340639216712
+        },
+        "ip": {
+          "hellaswag": 0.26558454491137223,
+          "commonsenseqa": 0.20475020475020475,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.04520049680756349
+        },
+        "gp_mean": 0.1320458761031195,
+        "ip_mean": 0.12888381161728513,
+        "resolved_tasks": [
+          "hellaswag",
+          "commonsense_qa",
+          "bbh_cot_fewshot_object_counting"
+        ],
+        "skipped_tasks": [],
+        "ip_fewshot_used": {
+          "hellaswag": 5,
+          "commonsense_qa": 5,
+          "bbh_cot_fewshot_object_counting": 3
+        },
+        "raw": {
+          "gp": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2711611232822147,
+              "acc_stderr,none": 0.004436505187567018,
+              "acc_norm,none": 0.27922724556861184,
+              "acc_norm_stderr,none": 0.004477025762200685
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.19492219492219492,
+              "acc_stderr,none": 0.011341478090883516
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          },
+          "ip": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2688707428799044,
+              "acc_stderr,none": 0.0044246647614797,
+              "acc_norm,none": 0.26558454491137223,
+              "acc_norm_stderr,none": 0.004407413723383586
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.20475020475020475,
+              "acc_stderr,none": 0.01155271447787659
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "stage_idx": 4,
+      "task_name": "task163_count_words_ending_with_letter",
+      "train_report": {
+        "task_name": "task163_count_words_ending_with_letter",
+        "train_metrics": {
+          "train_runtime": 217.332,
+          "train_samples_per_second": 76.763,
+          "train_steps_per_second": 2.402,
+          "total_flos": 382566240221184.0,
+          "train_loss": 0.3264999618018724,
+          "epoch": 3.0
+        },
+        "eval_metrics": {
+          "eval_loss": 0.3482693135738373,
+          "eval_runtime": 1.3837,
+          "eval_samples_per_second": 144.538,
+          "eval_steps_per_second": 18.067,
+          "epoch": 3.0
+        },
+        "learning_rate": 5e-05,
+        "num_train_epochs": 3.0,
+        "warmup_ratio": 0.01,
+        "per_device_train_batch_size": 16,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 2,
+        "max_seq_length": 256,
+        "seed": 42,
+        "stage_idx": 4,
+        "model_name": "roneneldan/TinyStories-33M",
+        "total_params": 68514048,
+        "trainable_params": 68514048
+      },
+      "seen_scores": {
+        "task1355_sent_comp_summarization": {
+          "score": 0.0,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0,
+          "n_samples": 50
+        },
+        "task141_odd-man-out_classification_category": {
+          "score": 0.0,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0,
+          "n_samples": 50
+        },
+        "task619_ohsumed_abstract_title_generation": {
+          "score": 0.001081081081081081,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.001081081081081081,
+          "n_samples": 50
+        },
+        "task163_count_words_ending_with_letter": {
+          "score": 0.0,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0,
+          "n_samples": 50
+        }
+      },
+      "general_scores": {
+        "gp": {
+          "hellaswag": 0.2664807807209719,
+          "commonsenseqa": 0.2031122031122031,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.06203234053012762
+        },
+        "ip": {
+          "hellaswag": 0.2560246962756423,
+          "commonsenseqa": 0.2031122031122031,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.040653150763222845
+        },
+        "gp_mean": 0.13290633109082567,
+        "ip_mean": 0.12494751253776706,
+        "resolved_tasks": [
+          "hellaswag",
+          "commonsense_qa",
+          "bbh_cot_fewshot_object_counting"
+        ],
+        "skipped_tasks": [],
+        "ip_fewshot_used": {
+          "hellaswag": 5,
+          "commonsense_qa": 5,
+          "bbh_cot_fewshot_object_counting": 3
+        },
+        "raw": {
+          "gp": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.26628161720772753,
+              "acc_stderr,none": 0.004411099046250669,
+              "acc_norm,none": 0.2664807807209719,
+              "acc_norm_stderr,none": 0.004412149415717716
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.2031122031122031,
+              "acc_stderr,none": 0.01151825479363406
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          },
+          "ip": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2645887273451504,
+              "acc_stderr,none": 0.004402124555058566,
+              "acc_norm,none": 0.2560246962756423,
+              "acc_norm_stderr,none": 0.004355436696716235
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.2031122031122031,
+              "acc_stderr,none": 0.01151825479363406
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          }
+        }
+      }
+    },
+    {
+      "stage_idx": 5,
+      "task_name": "task002_quoref_answer_generation",
+      "train_report": {
+        "task_name": "task002_quoref_answer_generation",
+        "train_metrics": {
+          "train_runtime": 585.8687,
+          "train_samples_per_second": 32.26,
+          "train_steps_per_second": 1.009,
+          "total_flos": 822832083763200.0,
+          "train_loss": 3.1811209870675694,
+          "epoch": 3.0
+        },
+        "eval_metrics": {
+          "eval_loss": 2.9430816173553467,
+          "eval_runtime": 3.0983,
+          "eval_samples_per_second": 64.551,
+          "eval_steps_per_second": 8.069,
+          "epoch": 3.0
+        },
+        "learning_rate": 5e-05,
+        "num_train_epochs": 3.0,
+        "warmup_ratio": 0.01,
+        "per_device_train_batch_size": 16,
+        "per_device_eval_batch_size": 8,
+        "gradient_accumulation_steps": 2,
+        "max_seq_length": 256,
+        "seed": 42,
+        "stage_idx": 5,
+        "model_name": "roneneldan/TinyStories-33M",
+        "total_params": 68514048,
+        "trainable_params": 68514048
+      },
+      "seen_scores": {
+        "task1355_sent_comp_summarization": {
+          "score": 0.006413505614142654,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.006413505614142654,
+          "n_samples": 50
+        },
+        "task141_odd-man-out_classification_category": {
+          "score": 0.0030210643015521066,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0030210643015521066,
+          "n_samples": 50
+        },
+        "task619_ohsumed_abstract_title_generation": {
+          "score": 0.018494764494920858,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.018494764494920858,
+          "n_samples": 50
+        },
+        "task163_count_words_ending_with_letter": {
+          "score": 0.0,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.0,
+          "n_samples": 50
+        },
+        "task002_quoref_answer_generation": {
+          "score": 0.00612834816801985,
+          "primary_metric": "rouge_l",
+          "exact_match": 0.0,
+          "rouge_l": 0.00612834816801985,
+          "n_samples": 50
+        }
+      },
+      "general_scores": {
+        "gp": {
+          "hellaswag": 0.2731527584146584,
+          "commonsenseqa": 0.20475020475020475,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.07106989320348889
+        },
+        "ip": {
+          "hellaswag": 0.26847241585341564,
+          "commonsenseqa": 0.21294021294021295,
+          "bbh_object_counting": 0.0,
+          "alpaca": 0.032973530285554616
+        },
+        "gp_mean": 0.137243214092088,
+        "ip_mean": 0.1285965397697958,
+        "resolved_tasks": [
+          "hellaswag",
+          "commonsense_qa",
+          "bbh_cot_fewshot_object_counting"
+        ],
+        "skipped_tasks": [],
+        "ip_fewshot_used": {
+          "hellaswag": 5,
+          "commonsense_qa": 5,
+          "bbh_cot_fewshot_object_counting": 3
+        },
+        "raw": {
+          "gp": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2700657239593706,
+              "acc_stderr,none": 0.004430861033616419,
+              "acc_norm,none": 0.2731527584146584,
+              "acc_norm_stderr,none": 0.004446680081493255
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.20475020475020475,
+              "acc_stderr,none": 0.01155271447787659
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          },
+          "ip": {
+            "hellaswag": {
+              "name": "hellaswag",
+              "alias": "hellaswag",
+              "sample_len": 10042,
+              "acc,none": 0.2664807807209719,
+              "acc_stderr,none": 0.004412149415717716,
+              "acc_norm,none": 0.26847241585341564,
+              "acc_norm_stderr,none": 0.004422590262385376
+            },
+            "commonsense_qa": {
+              "name": "commonsense_qa",
+              "alias": "commonsense_qa",
+              "sample_len": 1221,
+              "acc,none": 0.21294021294021295,
+              "acc_stderr,none": 0.01172067944979768
+            },
+            "bbh_cot_fewshot_object_counting": {
+              "name": "bbh_cot_fewshot_object_counting",
+              "alias": "bbh_cot_fewshot_object_counting",
+              "sample_len": 250,
+              "exact_match,get-answer": 0.0,
+              "exact_match_stderr,get-answer": 0.0
+            }
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "metrics": {
+      "AP": 0.026343759700956464,
+      "FP": 0.006811536515727095,
+      "Forget": 0.019532223185229368,
+      "GP": 0.137243214092088,
+      "IP": 0.1285965397697958
+    },
+    "task_order": [
+      "task1355_sent_comp_summarization",
+      "task141_odd-man-out_classification_category",
+      "task619_ohsumed_abstract_title_generation",
+      "task163_count_words_ending_with_letter",
+      "task002_quoref_answer_generation"
+    ],
+    "results_matrix": [
+      {
+        "stage": 1,
+        "trained_task": "task1355_sent_comp_summarization",
+        "scores": {
+          "task1355_sent_comp_summarization": 0.058186462763217574,
+          "task141_odd-man-out_classification_category": null,
+          "task619_ohsumed_abstract_title_generation": null,
+          "task163_count_words_ending_with_letter": null,
+          "task002_quoref_answer_generation": null
+        }
+      },
+      {
+        "stage": 2,
+        "trained_task": "task141_odd-man-out_classification_category",
+        "scores": {
+          "task1355_sent_comp_summarization": 0.0,
+          "task141_odd-man-out_classification_category": 0.01282051282051282,
+          "task619_ohsumed_abstract_title_generation": null,
+          "task163_count_words_ending_with_letter": null,
+          "task002_quoref_answer_generation": null
+        }
+      },
+      {
+        "stage": 3,
+        "trained_task": "task619_ohsumed_abstract_title_generation",
+        "scores": {
+          "task1355_sent_comp_summarization": 0.04516616417175646,
+          "task141_odd-man-out_classification_category": 0.00189520624303233,
+          "task619_ohsumed_abstract_title_generation": 0.054583474753032074,
+          "task163_count_words_ending_with_letter": null,
+          "task002_quoref_answer_generation": null
+        }
+      },
+      {
+        "stage": 4,
+        "trained_task": "task163_count_words_ending_with_letter",
+        "scores": {
+          "task1355_sent_comp_summarization": 0.0,
+          "task141_odd-man-out_classification_category": 0.0,
+          "task619_ohsumed_abstract_title_generation": 0.001081081081081081,
+          "task163_count_words_ending_with_letter": 0.0,
+          "task002_quoref_answer_generation": null
+        }
+      },
+      {
+        "stage": 5,
+        "trained_task": "task002_quoref_answer_generation",
+        "scores": {
+          "task1355_sent_comp_summarization": 0.006413505614142654,
+          "task141_odd-man-out_classification_category": 0.0030210643015521066,
+          "task619_ohsumed_abstract_title_generation": 0.018494764494920858,
+          "task163_count_words_ending_with_letter": 0.0,
+          "task002_quoref_answer_generation": 0.00612834816801985
+        }
+      }
+    ],
+    "diagonal_scores": {
+      "task1355_sent_comp_summarization": 0.058186462763217574,
+      "task141_odd-man-out_classification_category": 0.01282051282051282,
+      "task619_ohsumed_abstract_title_generation": 0.054583474753032074,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": 0.00612834816801985
+    },
+    "final_scores": {
+      "task1355_sent_comp_summarization": 0.006413505614142654,
+      "task141_odd-man-out_classification_category": 0.0030210643015521066,
+      "task619_ohsumed_abstract_title_generation": 0.018494764494920858,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": 0.00612834816801985
+    },
+    "per_task_forgetting": {
+      "task1355_sent_comp_summarization": 0.05177295714907492,
+      "task141_odd-man-out_classification_category": 0.009799448518960713,
+      "task619_ohsumed_abstract_title_generation": 0.036088710258111216,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": 0.0
+    }
+  }
+}

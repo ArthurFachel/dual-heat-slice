@@ -9,6 +9,7 @@ __pycache__/
 datasets_cache/
 plots/
 results/
+*.safetensors
 slice_cache_diag/
 slice_cache/
 imported_results/

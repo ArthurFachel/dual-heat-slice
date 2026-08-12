@@ -1,0 +1,57 @@
+[
+  {
+    "stage": 1,
+    "trained_task": "task1355_sent_comp_summarization",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.058186462763217574,
+      "task141_odd-man-out_classification_category": null,
+      "task619_ohsumed_abstract_title_generation": null,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 2,
+    "trained_task": "task141_odd-man-out_classification_category",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.0,
+      "task141_odd-man-out_classification_category": 0.01282051282051282,
+      "task619_ohsumed_abstract_title_generation": null,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 3,
+    "trained_task": "task619_ohsumed_abstract_title_generation",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.04516616417175646,
+      "task141_odd-man-out_classification_category": 0.00189520624303233,
+      "task619_ohsumed_abstract_title_generation": 0.054583474753032074,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 4,
+    "trained_task": "task163_count_words_ending_with_letter",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.0,
+      "task141_odd-man-out_classification_category": 0.0,
+      "task619_ohsumed_abstract_title_generation": 0.001081081081081081,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 5,
+    "trained_task": "task002_quoref_answer_generation",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.006413505614142654,
+      "task141_odd-man-out_classification_category": 0.0030210643015521066,
+      "task619_ohsumed_abstract_title_generation": 0.018494764494920858,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": 0.00612834816801985
+    }
+  }
+]

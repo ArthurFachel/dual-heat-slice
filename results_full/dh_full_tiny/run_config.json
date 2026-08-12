@@ -1,0 +1,162 @@
+{
+  "orchestrator": {},
+  "env": {
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]",
+    "packages": {
+      "torch": "2.13.0+cu126",
+      "transformers": "4.57.6",
+      "accelerate": "0.34.2",
+      "datasets": "5.0.1"
+    },
+    "cuda": {
+      "available": true,
+      "device_count": 1,
+      "version": "12.6"
+    }
+  },
+  "resolved": {
+    "sequence": "NI-Seq-G2",
+    "description": "Pure generation sequence 2: SentComp \u2192 OddManOut \u2192 OhSUMED \u2192 SyntheticExec \u2192 Quoref",
+    "task_order": [
+      "task1355_sent_comp_summarization",
+      "task141_odd-man-out_classification_category",
+      "task619_ohsumed_abstract_title_generation",
+      "task163_count_words_ending_with_letter",
+      "task002_quoref_answer_generation"
+    ],
+    "general_eval_keys": [],
+    "seed": 42,
+    "quick_eval": false,
+    "eval_size": 200,
+    "task_eval_samples": 50,
+    "task_eval_max_new_tokens": 50,
+    "cl_method": "dual_heat_full",
+    "cl_method_kwargs": {
+      "slow_strength": 1.5,
+      "fast_decay": 0.93,
+      "fast_strength": 1.5,
+      "fast_decay_rate": 0.04,
+      "slow_window": null,
+      "lateral_inhibition": true
+    },
+    "training_type": "full_finetune",
+    "use_bf16": false
+  },
+  "model": {
+    "class": "GPTNeoForCausalLM",
+    "name_or_path": "roneneldan/TinyStories-33M",
+    "config": {
+      "vocab_size": 50257,
+      "max_position_embeddings": 2048,
+      "hidden_size": 768,
+      "num_layers": 4,
+      "num_heads": 16,
+      "intermediate_size": null,
+      "window_size": 256,
+      "activation_function": "gelu_new",
+      "resid_dropout": 0,
+      "embed_dropout": 0,
+      "attention_dropout": 0,
+      "classifier_dropout": 0.1,
+      "layer_norm_epsilon": 1e-05,
+      "initializer_range": 0.02,
+      "use_cache": true,
+      "bos_token_id": 50256,
+      "eos_token_id": 50256,
+      "attention_types": [
+        [
+          [
+            "global",
+            "local"
+          ],
+          2
+        ]
+      ],
+      "attention_layers": [
+        "global",
+        "local",
+        "global",
+        "local"
+      ],
+      "return_dict": true,
+      "output_hidden_states": false,
+      "torchscript": false,
+      "dtype": "float32",
+      "pruned_heads": {},
+      "tie_word_embeddings": true,
+      "chunk_size_feed_forward": 0,
+      "is_encoder_decoder": false,
+      "is_decoder": false,
+      "cross_attention_hidden_size": null,
+      "add_cross_attention": false,
+      "tie_encoder_decoder": false,
+      "architectures": [
+        "GPTNeoForCausalLM"
+      ],
+      "finetuning_task": null,
+      "id2label": {
+        "0": "LABEL_0",
+        "1": "LABEL_1"
+      },
+      "label2id": {
+        "LABEL_0": 0,
+        "LABEL_1": 1
+      },
+      "task_specific_params": null,
+      "problem_type": null,
+      "tokenizer_class": null,
+      "prefix": null,
+      "pad_token_id": null,
+      "sep_token_id": null,
+      "decoder_start_token_id": null,
+      "max_length": 20,
+      "min_length": 0,
+      "do_sample": false,
+      "early_stopping": false,
+      "num_beams": 1,
+      "temperature": 1.0,
+      "top_k": 50,
+      "top_p": 1.0,
+      "typical_p": 1.0,
+      "repetition_penalty": 1.0,
+      "length_penalty": 1.0,
+      "no_repeat_ngram_size": 0,
+      "encoder_no_repeat_ngram_size": 0,
+      "bad_words_ids": null,
+      "num_return_sequences": 1,
+      "output_scores": false,
+      "return_dict_in_generate": false,
+      "forced_bos_token_id": null,
+      "forced_eos_token_id": null,
+      "remove_invalid_values": false,
+      "exponential_decay_length_penalty": null,
+      "suppress_tokens": null,
+      "begin_suppress_tokens": null,
+      "num_beam_groups": 1,
+      "diversity_penalty": 0.0,
+      "_name_or_path": "roneneldan/TinyStories-33M",
+      "transformers_version": "4.57.6",
+      "gradient_checkpointing": false,
+      "model_type": "gpt_neo",
+      "summary_activation": null,
+      "summary_first_dropout": 0.1,
+      "summary_proj_to_labels": true,
+      "summary_type": "cls_index",
+      "summary_use_proj": true,
+      "tf_legacy_loss": false,
+      "use_bfloat16": false,
+      "output_attentions": false
+    }
+  },
+  "tokenizer": {
+    "class": "GPT2TokenizerFast",
+    "name_or_path": "roneneldan/TinyStories-33M",
+    "pad_token": "<|endoftext|>",
+    "eos_token": "<|endoftext|>",
+    "padding_side": "right"
+  },
+  "notes": {
+    "hf_token_present": false,
+    "hf_token_redacted": true
+  }
+}

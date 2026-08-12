@@ -1,0 +1,57 @@
+[
+  {
+    "stage": 1,
+    "trained_task": "task1355_sent_comp_summarization",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.06171434770423621,
+      "task141_odd-man-out_classification_category": null,
+      "task619_ohsumed_abstract_title_generation": null,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 2,
+    "trained_task": "task141_odd-man-out_classification_category",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.005268542199488491,
+      "task141_odd-man-out_classification_category": 0.02783008658008658,
+      "task619_ohsumed_abstract_title_generation": null,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 3,
+    "trained_task": "task619_ohsumed_abstract_title_generation",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.043639098301937934,
+      "task141_odd-man-out_classification_category": 0.0018974076116933258,
+      "task619_ohsumed_abstract_title_generation": 0.05882233544350082,
+      "task163_count_words_ending_with_letter": null,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 4,
+    "trained_task": "task163_count_words_ending_with_letter",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.0,
+      "task141_odd-man-out_classification_category": 0.0,
+      "task619_ohsumed_abstract_title_generation": 0.0025,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": null
+    }
+  },
+  {
+    "stage": 5,
+    "trained_task": "task002_quoref_answer_generation",
+    "scores": {
+      "task1355_sent_comp_summarization": 0.05390944426550466,
+      "task141_odd-man-out_classification_category": 0.0,
+      "task619_ohsumed_abstract_title_generation": 0.05833604874009327,
+      "task163_count_words_ending_with_letter": 0.0,
+      "task002_quoref_answer_generation": 0.005441771441771441
+    }
+  }
+]
