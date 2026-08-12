@@ -27,18 +27,25 @@ from dotenv import load_dotenv
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
     Trainer,
     TrainingArguments,
 )
 
 try:
     from .cl_methods import CLMethod, VanillaCLMethod
-    from .load_dataset import configure_prompt_tokenizer, load_training_dataset
+    from .load_dataset import (
+        CompletionOnlyDataCollator,
+        configure_prompt_tokenizer,
+        load_training_dataset,
+    )
     from .repro import set_global_seed
 except ImportError:
     from cl_methods import CLMethod, VanillaCLMethod
-    from load_dataset import configure_prompt_tokenizer, load_training_dataset
+    from load_dataset import (
+        CompletionOnlyDataCollator,
+        configure_prompt_tokenizer,
+        load_training_dataset,
+    )
     from repro import set_global_seed
 
 
@@ -109,9 +116,45 @@ def load_base_model(
 
 
 def _tokenize_dataset(dataset, tokenizer, max_length: int):
+    def tokenize(ex):
+        encoded = tokenizer(ex["text"], truncation=True, max_length=max_length)
+        prompt = tokenizer(ex["prompt"], truncation=True, max_length=max_length)
+        encoded["prompt_length"] = min(len(prompt["input_ids"]), len(encoded["input_ids"]))
+        return encoded
     return dataset.map(
-        lambda ex: tokenizer(ex["text"], truncation=True, max_length=max_length),
+        tokenize,
         remove_columns=dataset.column_names,
+    )
+
+
+def _build_training_arguments(
+    *, output_path: Path, learning_rate: float, num_train_epochs: float,
+    warmup_ratio: float, per_device_train_batch_size: int,
+    per_device_eval_batch_size: int, gradient_accumulation_steps: int,
+    logging_steps: int, eval_steps: int, seed: int, use_bf16: bool,
+) -> TrainingArguments:
+    """Build the effective Trainer configuration from caller controls."""
+    return TrainingArguments(
+        output_dir=str(output_path),
+        per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        logging_steps=logging_steps,
+        save_strategy="no",
+        warmup_ratio=warmup_ratio,
+        eval_strategy="steps",
+        eval_steps=eval_steps,
+        bf16=use_bf16,
+        fp16=not use_bf16,
+        dataloader_num_workers=2,
+        report_to="none",
+        # prompt_length is consumed by CompletionOnlyDataCollator, not model.forward.
+        # Keep it so Trainer cannot strip the completion boundary before collation.
+        remove_unused_columns=False,
+        seed=seed,
+        ddp_find_unused_parameters=False,
     )
 
 
@@ -150,6 +193,7 @@ def train_on_task_full(
     max_seq_length: int = 256,
     eval_size: int = 200,
     seed: int = 42,
+    use_bf16: bool = False,
     save_model: bool = True,
     cl_method: CLMethod | None = None,
     stage_idx: int = 1,
@@ -175,28 +219,21 @@ def train_on_task_full(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    training_args = TrainingArguments(
-        output_dir=str(output_path),
+    training_args = _build_training_arguments(
+        output_path=output_path,
+        learning_rate=learning_rate,
+        num_train_epochs=num_train_epochs,
+        warmup_ratio=warmup_ratio,
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        learning_rate=learning_rate,
-        num_train_epochs=num_train_epochs,
         logging_steps=logging_steps,
-        save_strategy="no",
-        warmup_ratio=warmup_ratio,
-        eval_strategy="steps",
         eval_steps=eval_steps,
-        bf16=False,
-        fp16=True,
-        dataloader_num_workers=2,
-        report_to="none",
-        remove_unused_columns=True,
         seed=seed,
-        ddp_find_unused_parameters=False,
+        use_bf16=use_bf16,
     )
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = CompletionOnlyDataCollator(tokenizer)
 
     trainer = _CLAuxLossTrainer(
         model=model,

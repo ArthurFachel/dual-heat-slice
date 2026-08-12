@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -17,6 +17,7 @@ class SliceInitConfig:
     grad_project_always: bool = False
     add_retain_grad: bool = False
     rank: Optional[int] = None
+    lora_alpha: float = 2.0
     max_seq_length: int = 256
     retain_batch_size: Optional[int] = None
     retain_grad_accum: Optional[int] = None
@@ -40,6 +41,7 @@ class SliceInitConfig:
     # GradVac target cosine and EMA beta (idea A.2).
     gradvac_phi: float = 0.0
     gradvac_beta: float = 0.5
+    gradvac_state: dict[str, float] = field(default_factory=dict)
     # Magnitude-preserving rescale after projection (idea A.6).
     magnitude_preserve: bool = False
     # Null-space projection rank / threshold (idea A.5).

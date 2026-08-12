@@ -7,9 +7,10 @@ LoRA, LoRA-GA, LoRAM), the optional training-time continual-learning methods
 (O-LoRA, Dual-Heat), and the adversarial **NI-Seq-Opposite** task
 sequences introduced in the paper.
 
-> **Note:** SAPT and InfLoRA are referenced in the sweep scripts but are not
-> yet implemented in this repository. The scripts serve as a template for
-> future extension.
+> **Supported-method note:** runnable sweeps use only `vanilla`, `o_lora`,
+> `dual_heat`, and `dual_heat_full`. Legacy launchers for methods absent from
+> this checkout are quarantined and exit immediately instead of starting a
+> mislabeled experiment.
 
 ## Repository Layout
 
@@ -29,7 +30,7 @@ cl_lora/
 ├── slice/                 # SLICE init: gradient capture, projection, SVD, apply
 │   ├── compute.py         #   - main entry point (compute / cache inits)
 │   ├── gradients.py       #   - per-module gradient accumulation
-│   ├── projections.py     #   - PCGrad / CAGrad / GradVac / Nullspace operators
+│   ├── projections.py     #   - PCGrad / PCGrad-c / GradVac / Nullspace operators
 │   ├── decompose.py       #   - truncated SVD & magnitude rescaling
 │   ├── apply.py           #   - inject (A, B) into LoRA layers
 │   ├── config.py          #   - SliceInitConfig dataclass
@@ -48,8 +49,7 @@ scripts/                   # Bash wrappers for the experiments in the paper
 ├── test_init_x_cl_methods_lean.sh      # Init × CL-method composition matrix (lean)
 ├── lean_sweep.sh                       # SLURM driver for memory-economy × CL sweep
 ├── alpha_sweep.sh                      # rsLoRA α ∈ {1, 2, 4} sweep (Appx. C)
-├── sapt.sh                             # SAPT training sweep (5 inits × all seqs)
-├── train_sapt.sh                       # SLURM wrapper for SAPT training
+├── sapt.sh, train_sapt.sh              # quarantined legacy launchers (exit 2)
 ├── eval.sh, parallel_eval.sh, ...      # Evaluation drivers
 └── compute_sequence_metrics.sh         # NI-Seq-Opposite sequence mining
 
@@ -67,10 +67,9 @@ paper used a single 24 GB GPU per run). Install dependencies with:
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins the PyTorch CUDA 12.6 wheels and pulls
-`transformers >= 4.46`, `peft`, `accelerate`, `datasets`, and the
-`lm-evaluation-harness` package directly from its public Git repository (used
-to compute GP / IP).
+`requirements.txt` pins PyTorch on the CUDA 12.6 wheel index and consistently
+bounds the Transformers, PEFT, Accelerate, Datasets, and evaluation-harness
+dependencies used for GP / IP.
 
 A reference Conda environment file (`environment.yml`) is also provided
 for reproducibility.
@@ -115,9 +114,9 @@ CUDA_VISIBLE_DEVICES=0 python -m cl_lora.orchestrator \
   --slice-projection-method pcgrad
 ```
 
-Switch the projection operator with `--slice-projection-method` and the
-PCGrad/CAGrad strength with `--slice-cagrad-c` (e.g. `--slice-projection-method
-cagrad --slice-cagrad-c 0.50` for the c=0.5 variant in the main table).
+Switch the projection operator with `--slice-projection-method` and set the
+PCGrad-c strength with `--slice-pcgrad-c` (for example,
+`--slice-projection-method pcgrad_c --slice-pcgrad-c 0.50`).
 
 Available projection methods: `pcgrad`, `pcgrad_c`, `gradvac`, `nullspace`,
 `magnitude_preserving`.
@@ -156,7 +155,7 @@ GPU=0 RANK=64 RUN_SUFFIX=projvariants \
     bash scripts/full_train_projection_variants.sh
 
 # Appendix C — rsLoRA α ∈ {1, 2, 4} sweep
-GPU=0 ALPHAS="1 2 4" METHODS="cagrad lora_ga" \
+GPU=0 ALPHAS="1 2 4" METHODS="pcgrad_c lora_ga" \
     SEQUENCES="NI-Seq-G2 NI-Seq-Opposite-v4 TRACE" \
     bash scripts/alpha_sweep.sh
 
@@ -172,8 +171,8 @@ interrupted runs can be picked up where they left off.
 
 The files `scripts/test_init_x_cl_methods.sh` and
 `scripts/test_init_x_cl_methods_lean.sh` iterate every LoRA initialization
-(lora_vanilla, loram, lora_ga, slice) against every CL training method
-(o_lora, inflora, sapt) — a full 4 × 3 = 12-run sweep per sequence:
+(`lora_vanilla`, `loram`, `lora_ga`, `slice`) against implemented CL training
+methods (`vanilla`, `o_lora`, `dual_heat`) — 12 runs per sequence:
 
 ```compose
 # Smoke (small budgets)
@@ -181,7 +180,7 @@ GPU=0 SEQUENCES="NI-Seq-G2" RUN_SUFFIX=smoke01 \
     bash scripts/test_init_x_cl_methods.sh
 
 # Restrict to specific init + CL method combos
-ONLY_INITS="slice lora_ga" ONLY_CL="sapt" \
+ONLY_INITS="slice lora_ga" ONLY_CL="dual_heat" \
     bash scripts/test_init_x_cl_methods.sh
 ```
 

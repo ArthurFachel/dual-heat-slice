@@ -13,6 +13,8 @@ def _stage_seen_scores(stage_record: Dict[str, Any]) -> Dict[str, float | None]:
     seen = stage_record.get("seen_tasks")
     if seen is None:
         seen = stage_record.get("evaluation", {}).get("seen_tasks", {})
+    if seen is None or not seen:
+        seen = stage_record.get("seen_scores", {})
 
     out: Dict[str, float | None] = {}
     for task_name, payload in seen.items():
@@ -83,17 +85,20 @@ def compute_cl_metrics(
         per_task_forgetting[task_name] = (
             (diag - final) if (diag is not None and final is not None) else None
         )
+    paired_forgetting = [value for value in per_task_forgetting.values() if value is not None]
 
     final_general = stage_records[-1].get("general")
     if final_general is None:
         final_general = stage_records[-1].get("evaluation", {}).get("general", {})
+    if final_general is None or not final_general:
+        final_general = stage_records[-1].get("general_scores", {})
 
     ap = _mean(diag_values)
     fp = _mean(final_values)
     metrics = {
         "AP": ap,
         "FP": fp,
-        "Forget": (ap - fp) if (ap is not None and fp is not None) else None,
+        "Forget": _mean(paired_forgetting),
         "GP": final_general.get("gp_mean"),
         "IP": final_general.get("ip_mean"),
     }

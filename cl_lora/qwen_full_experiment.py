@@ -442,9 +442,9 @@ def run_experiment(
         "total_params": n_params,
         "trainable_params": n_trainable,
         "results_matrix": results_matrix,
-        "average_accuracy_ap": ap,
-        "final_performance_fp": fp,
-        "avg_forgetting": avg_forgetting,
+        "AP": ap,
+        "FP": fp,
+        "Forget": avg_forgetting,
         "per_task_forgetting": per_task_forgetting,
     }
 

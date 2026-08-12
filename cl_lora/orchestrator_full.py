@@ -110,7 +110,7 @@ def _collect_env_info() -> Dict[str, Any]:
         import torch
         info["cuda"] = {
             "available": bool(torch.cuda.is_available()),
-            "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 2,
+            "device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
             "version": getattr(torch.version, "cuda", None),
         }
     except Exception:
@@ -158,6 +158,11 @@ def run_sequence(
     resume: bool,
     warmup_ratio: float,
     use_bf16: bool = False,
+    learning_rate: float = 5e-5,
+    num_train_epochs: float = 3.0,
+    per_device_train_batch_size: int = 2,
+    gradient_accumulation_steps: int = 8,
+    max_seq_length: int = 256,
     # No LoRA params — full fine-tuning
     keep_all_checkpoints: bool = False,
     general_eval_strategy: str = "every_stage",
@@ -196,6 +201,12 @@ def run_sequence(
         "cl_method_kwargs": dict(cl_method_kwargs or {}),
         "training_type": "full_finetune",
         "use_bf16": bool(use_bf16),
+        "learning_rate": float(learning_rate),
+        "num_train_epochs": float(num_train_epochs),
+        "per_device_train_batch_size": int(per_device_train_batch_size),
+        "gradient_accumulation_steps": int(gradient_accumulation_steps),
+        "max_seq_length": int(max_seq_length),
+        "warmup_ratio": float(warmup_ratio),
     }
 
     run_cfg_payload: Dict[str, Any] = {
@@ -304,6 +315,12 @@ def run_sequence(
             seed=seed,
             retain_tasks=retain_tasks,
             warmup_ratio=warmup_ratio,
+            learning_rate=learning_rate,
+            num_train_epochs=num_train_epochs,
+            per_device_train_batch_size=per_device_train_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            max_seq_length=max_seq_length,
+            use_bf16=use_bf16,
             cl_method=cl_method,
             stage_idx=idx,
         )
@@ -325,7 +342,7 @@ def run_sequence(
         run_general = True
         if general_eval_strategy == "first_and_last":
             run_general = (idx == 1 or is_final_stage)
-        elif general_eval_strategy == "last_only":
+        elif general_eval_strategy == "final_only":
             run_general = is_final_stage
 
         # Evaluate (seen tasks + general tasks, handled internally by evaluate_all)
@@ -340,6 +357,7 @@ def run_sequence(
             task_eval_samples=task_eval_samples,
             task_eval_max_new_tokens=task_eval_max_new_tokens,
             quick_eval=quick_eval,
+            skip_general_eval=not run_general,
             seed=seed,
         )
         seen_scores = evaluation.get("seen_tasks", {})
@@ -349,11 +367,11 @@ def run_sequence(
             print(f"  General-task scores: GP={general_scores.get('gp_mean', 'N/A'):.4f} IP={general_scores.get('ip_mean', 'N/A'):.4f}")
 
         stage_record = {
-            "stage_idx": idx,
-            "task_name": task_name,
+            "stage": idx,
+            "trained_task": task_name,
             "train_report": train_report,
-            "seen_scores": seen_scores,
-            "general_scores": general_scores,
+            "seen_tasks": seen_scores,
+            "general": general_scores,
         }
         stage_records.append(stage_record)
 
@@ -411,11 +429,11 @@ def run_sequence(
             return f"{val:.{decimals}f}"
         return str(val)
 
-    print(f"  Avg performance (AP): {_fmt(metrics.get('average_performance', 'N/A'))}")
-    print(f"  Avg forgetting:       {_fmt(metrics.get('average_forgetting', 'N/A'))}")
-    print(f"  Forward transfer:     {_fmt(metrics.get('forward_transfer', 'N/A'))}")
-    print(f"  Backward transfer:    {_fmt(metrics.get('backward_transfer', 'N/A'))}")
-    print(f"  Intransigence:        {_fmt(metrics.get('intransigence', 'N/A'))}")
+    print(f"  Avg performance (AP): {_fmt(metrics.get('AP', 'N/A'))}")
+    print(f"  Final performance:    {_fmt(metrics.get('FP', 'N/A'))}")
+    print(f"  Avg forgetting:       {_fmt(metrics.get('Forget', 'N/A'))}")
+    print(f"  General performance:  {_fmt(metrics.get('GP', 'N/A'))}")
+    print(f"  In-context perf.:     {_fmt(metrics.get('IP', 'N/A'))}")
 
     print(f"\nResults saved to {run_output_dir}")
     return final_payload
@@ -462,6 +480,11 @@ def main():
     parser.add_argument("--task-eval-max-new-tokens", type=int, default=50)
     parser.add_argument("--quick-eval", action="store_true")
     parser.add_argument("--general-eval-keys", nargs="*", default=[])
+    parser.add_argument(
+        "--general-eval-strategy",
+        choices=["every_stage", "first_and_last", "final_only"],
+        default="every_stage",
+    )
 
     # Resume / output
     parser.add_argument("--resume", action="store_true")
@@ -512,6 +535,12 @@ def main():
         resume=args.resume,
         warmup_ratio=args.warmup_ratio,
         use_bf16=args.use_bf16,
+        learning_rate=args.lr,
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        max_seq_length=args.max_seq_length,
+        general_eval_strategy=args.general_eval_strategy,
         cl_method_name=args.method,
         cl_method_kwargs=cl_kwargs,
     )

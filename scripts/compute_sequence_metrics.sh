@@ -10,14 +10,14 @@
 #
 # Env overrides:
 #   RUNS_ROOT   directory containing run subdirectories to summarize
-#               (default: the completed-runs folder on E-SSD)
+#               (default: <repo>/results)
 #   PYTHON_BIN  python executable (default: python)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RUNS_ROOT="${RUNS_ROOT:-/mnt/E-SSD/dev-cl-lora/cl-lora/results/completed}"
+RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/results}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 if [[ ! -d "${RUNS_ROOT}" ]]; then

@@ -15,7 +15,8 @@ def build_ab_from_gradient(
     """Decompose a gradient matrix into LoRA A/B via low-rank SVD.
 
     svd_selection:
-      - "lora_ga": B=U[:,:r], A=V[r:2r,:]^T (LoRA-GA disjoint slices, BA=0 at init).
+      - "lora_ga": B=U[:,:r], A=V[r:2r,:]^T (LoRA-GA disjoint slices;
+        BA is approximately zero up to randomized-SVD and rescaling error).
       - "top_r_no_sigma": B=U[:,:r], A=V[:,:r]^T (top-r singular vectors, no
         sigma weighting — idea C.16 variant without magnitude weighting).
     """
@@ -23,6 +24,11 @@ def build_ab_from_gradient(
     d_out, d_in = G.shape
     G32 = G.float()
     if svd_selection == "lora_ga":
+        if r <= 0 or 2 * r > min(G32.shape):
+            raise ValueError(
+                "LoRA-GA requires 2 * rank <= min(G.shape), "
+                f"got rank={r}, shape={tuple(G.shape)}"
+            )
         q = min(4 * r, min(G32.shape))
     else:
         q = min(max(2 * r, r + 2), min(G32.shape))

@@ -483,9 +483,9 @@ def run_experiment(
         "seed": seed,
         "num_tasks": n_tasks,
         "results_matrix": results_matrix,
-        "average_accuracy_ap": ap,
-        "final_performance_fp": fp,
-        "avg_forgetting": avg_forgetting,
+        "AP": ap,
+        "FP": fp,
+        "Forget": avg_forgetting,
         "per_task_forgetting": per_task_forgetting,
     }
 
@@ -543,9 +543,9 @@ def compare_all_methods(
     print("-" * 70)
     for r in results:
         label = r["label"]
-        ap = r.get("average_accuracy_ap", 0)
-        fp = r.get("final_performance_fp", 0)
-        forget = r.get("avg_forgetting", 0)
+        ap = r.get("AP", 0)
+        fp = r.get("FP", 0)
+        forget = r.get("Forget", 0)
         print(f"{label:<45} {ap:<10.4f} {fp:<10.4f} {forget:<10.4f}")
     print("-" * 70)
 

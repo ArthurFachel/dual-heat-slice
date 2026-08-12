@@ -178,15 +178,15 @@ class _DualHeatFullModule(nn.Module):
         if not state:
             return
         self._loaded_cpu_state = {
-            "fast_heat": state["fast_heat"].clone(),
-            "slow_heat": state["slow_heat"].clone(),
-            "slow_n": state["slow_n"].clone(),
-            "step": state["step"].clone() if "step" in state else torch.zeros((), dtype=torch.long),
+            "fast_heat": state["fast_heat"].float().clone(),
+            "slow_heat": state["slow_heat"].float().clone(),
+            "slow_n": state["slow_n"].long().clone(),
+            "step": state["step"].long().clone() if "step" in state else torch.zeros((), dtype=torch.long),
         }
 
     def _get_or_restore(self, device: torch.device, dtype: torch.dtype) -> Dict[str, torch.Tensor]:
         """Get per-device state, initializing from loaded CPU state if available."""
-        key = f"{str(device)}_{dtype}"
+        key = str(device)
         if key in self._per_device:
             return self._per_device[key]
 
@@ -195,16 +195,16 @@ class _DualHeatFullModule(nn.Module):
             d = {}
             for k, v in loaded.items():
                 if k in ("fast_heat", "slow_heat"):
-                    d[k] = v.to(device=device, dtype=dtype)
+                    d[k] = v.to(device=device, dtype=torch.float32)
                 else:
                     d[k] = v.to(device=device)
             self._per_device[key] = d
             self._loaded_cpu_state = None
         else:
             self._per_device[key] = {
-                "fast_heat": torch.zeros(self.out_features, device=device, dtype=dtype),
-                "slow_heat": torch.zeros(self.out_features, device=device, dtype=dtype),
-                "slow_n": torch.zeros((), device=device),
+                "fast_heat": torch.zeros(self.out_features, device=device, dtype=torch.float32),
+                "slow_heat": torch.zeros(self.out_features, device=device, dtype=torch.float32),
+                "slow_n": torch.zeros((), dtype=torch.long, device=device),
                 "step": torch.zeros((), dtype=torch.long, device=device),
             }
         return self._per_device[key]
@@ -215,7 +215,7 @@ class _DualHeatFullModule(nn.Module):
         state = self._get_or_restore(output.device, dtype=output.dtype)
 
         reduce_dims = tuple(range(output.dim() - 1))
-        post_mag = output.detach().abs().mean(dim=reduce_dims)
+        post_mag = output.detach().float().abs().mean(dim=reduce_dims)
 
         # Fast: EMA + decay ativo
         state["fast_heat"].mul_(self.fast_decay).add_(
@@ -223,10 +223,10 @@ class _DualHeatFullModule(nn.Module):
         ).sub_(self.fast_decay_rate).clamp_(min=0.0)
 
         # Slow: capped incremental mean
+        state["slow_n"] += 1
         n_true = state["slow_n"].item()
         n_eff = min(n_true, self.slow_window) if self.slow_window is not None else n_true
         state["slow_heat"].add_((post_mag - state["slow_heat"]) / float(n_eff))
-        state["slow_n"] += 1
         state["step"] += 1
 
     def get_ewc_scale(self, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
@@ -234,12 +234,15 @@ class _DualHeatFullModule(nn.Module):
         if self.slow_strength <= 0.0:
             return torch.ones(self.out_features, device=device, dtype=dtype)
         state = self._get_or_restore(device, dtype=dtype)
-        return 1.0 / (1.0 + self.slow_strength * state["slow_heat"])
+        return (1.0 / (1.0 + self.slow_strength * state["slow_heat"])).to(dtype=dtype)
 
     def get_state_snapshot(self) -> Dict[str, torch.Tensor]:
         """Return merged heat state for checkpointing."""
         if not self._per_device:
-            return {}
+            loaded = getattr(self, "_loaded_cpu_state", None)
+            if loaded is None:
+                return {}
+            return {k: v.cpu().clone() for k, v in loaded.items()}
         first = next(iter(self._per_device.values()))
         return {
             "fast_heat": first["fast_heat"].cpu().clone(),
@@ -355,7 +358,7 @@ class DualHeatFullCLMethod(CLMethod):
                 fh = state["fast_heat"]
                 sum_h = fh.sum()
                 mean_others = (sum_h - fh) / float(out_features - 1)
-                scale = 1.0 + dh_mod.fast_strength * mean_others
+                scale = (1.0 + dh_mod.fast_strength * mean_others).to(result.dtype)
                 result = result / scale
 
             # Heat tracking
@@ -387,6 +390,11 @@ class DualHeatFullCLMethod(CLMethod):
             "DualHeatFull: found %d target linear layers",
             len(target_layers),
         )
+        if not target_layers:
+            raise RuntimeError(
+                "DualHeatFull matched zero target modules; model architecture or "
+                f"target patterns are unsupported: {self.target_module_patterns}"
+            )
 
         for name, mod in target_layers:
             dh_mod = _DualHeatFullModule(
@@ -489,6 +497,7 @@ class DualHeatFullCLMethod(CLMethod):
             len(heat_info),
         )
         self._train_heat_snapshot = heat_info
+        self._loaded_heat_state = heat_info
         self._remove_patched_forward()
 
     def save(self, state_dir: str) -> None:

@@ -4,6 +4,7 @@ import argparse
 import functools
 import inspect
 import json
+import logging
 import os
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -16,21 +17,27 @@ from peft import get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
     Trainer,
     TrainingArguments,
 )
-import logging
 
 try:
     from .cl_methods import CLMethod, VanillaCLMethod
-    from .load_dataset import configure_prompt_tokenizer, load_training_dataset
+    from .load_dataset import (
+        CompletionOnlyDataCollator,
+        configure_prompt_tokenizer,
+        load_training_dataset,
+    )
     from .lora_config import build_lora_config
     from .repro import set_global_seed
     from .slice import SliceInitConfig, initialize_lora_with_slice
 except ImportError:
     from cl_methods import CLMethod, VanillaCLMethod  # type: ignore[no-redef]
-    from load_dataset import configure_prompt_tokenizer, load_training_dataset  # type: ignore[no-redef]
+    from load_dataset import (  # type: ignore[no-redef]
+        CompletionOnlyDataCollator,
+        configure_prompt_tokenizer,
+        load_training_dataset,
+    )
     from lora_config import build_lora_config
     from repro import set_global_seed
     from slice import SliceInitConfig, initialize_lora_with_slice  # type: ignore[no-redef]
@@ -76,12 +83,10 @@ def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
     torch_dtype: torch.dtype = torch.float16,
-    device_map: str = "auto",
 ):
     local = Path(model_name).is_dir()
     kwargs: dict = dict(
         torch_dtype=torch_dtype,
-        device_map=device_map,
         token=hf_token,
         local_files_only=local,
     )
@@ -99,8 +104,13 @@ def load_base_model(
 
 
 def _tokenize_dataset(dataset, tokenizer, max_length: int):
+    def tokenize(ex):
+        encoded = tokenizer(ex["text"], truncation=True, max_length=max_length)
+        prompt = tokenizer(ex["prompt"], truncation=True, max_length=max_length)
+        encoded["prompt_length"] = min(len(prompt["input_ids"]), len(encoded["input_ids"]))
+        return encoded
     return dataset.map(
-        lambda ex: tokenizer(ex["text"], truncation=True, max_length=max_length),
+        tokenize,
         remove_columns=dataset.column_names,
     )
 
@@ -166,7 +176,6 @@ def load_model_with_adapters(
     adapter_paths: List[str],
     hf_token: str | None = HF_TOKEN,
     torch_dtype: torch.dtype = torch.float16,
-    device_map: str = "auto",
 ):
     """Load base model and apply LoRA adapters sequentially, merging each one.
 
@@ -179,7 +188,7 @@ def load_model_with_adapters(
     from peft import PeftModel
 
     model = load_base_model(
-        base_model_path, hf_token=hf_token, torch_dtype=torch_dtype, device_map=device_map
+        base_model_path, hf_token=hf_token, torch_dtype=torch_dtype
     )
     for adapter_path in adapter_paths:
         model = PeftModel.from_pretrained(model, adapter_path)
@@ -292,6 +301,7 @@ def train_on_task(
     slice_nullspace_rank: int = 8,
     slice_nullspace_sv_threshold: float = 0.0,
     slice_svd_selection: str = "lora_ga",
+    slice_gradvac_state: dict[str, float] | None = None,
     cl_method: CLMethod | None = None,
     stage_idx: int = 1,
 ) -> Tuple[Any, Dict[str, Any]]:
@@ -341,6 +351,7 @@ def train_on_task(
             pcgrad_c=slice_pcgrad_c,
             gradvac_phi=slice_gradvac_phi,
             gradvac_beta=slice_gradvac_beta,
+            gradvac_state=slice_gradvac_state if slice_gradvac_state is not None else {},
             magnitude_preserve=slice_magnitude_preserve,
             nullspace_rank=slice_nullspace_rank,
             nullspace_sv_threshold=slice_nullspace_sv_threshold,
@@ -410,11 +421,13 @@ def train_on_task(
         fp16=not use_bf16,
         dataloader_num_workers=2,
         report_to="none",
-        remove_unused_columns=True,
+        # prompt_length is consumed by CompletionOnlyDataCollator, not model.forward.
+        # Keep it so Trainer cannot strip the completion boundary before collation.
+        remove_unused_columns=False,
         seed=seed,
     )
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = CompletionOnlyDataCollator(tokenizer)
 
     trainer = _CLAuxLossTrainer(
         model=lora_model,

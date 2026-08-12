@@ -441,11 +441,17 @@ def _evaluate_task_with_generation(
 
     prompts = eval_dataset["prompt"]
     targets = eval_dataset["target"]
+    references = (
+        eval_dataset["references"]
+        if "references" in eval_dataset.column_names
+        else [[target] for target in targets]
+    )
 
     with _left_padding_for_generation(tokenizer):
         for start in range(0, len(prompts), batch_size):
             batch_prompts = prompts[start : start + batch_size]
             batch_targets = targets[start : start + batch_size]
+            batch_references = references[start : start + batch_size]
 
             encoded = tokenizer(
                 batch_prompts,
@@ -473,10 +479,10 @@ def _evaluate_task_with_generation(
             for i, target in enumerate(batch_targets):
                 continuation_ids = outputs[i, input_len:]
                 prediction = tokenizer.decode(continuation_ids, skip_special_tokens=True).strip()
-                ref = str(target).strip()
-
-                exact_scores.append(_exact_match(prediction, ref))
-                rouge_scores.append(_rouge_l_f1(prediction, ref))
+                refs = batch_references[i] or [target]
+                refs = [str(ref).strip() for ref in refs]
+                exact_scores.append(max(_exact_match(prediction, ref) for ref in refs))
+                rouge_scores.append(max(_rouge_l_f1(prediction, ref) for ref in refs))
 
     exact_match = _mean(exact_scores) or 0.0
     rouge_l = _mean(rouge_scores) or 0.0

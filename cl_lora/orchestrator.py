@@ -317,6 +317,7 @@ def run_sequence(
     stage_records: List[Dict[str, Any]] = []
     start_stage = 1
     seen_tasks = []
+    slice_gradvac_state: Dict[str, float] = {}
 
     if resume and partial_path.exists():
         partial = _read_json(partial_path)
@@ -326,6 +327,10 @@ def run_sequence(
             raise ValueError("Resume failed: task order does not match saved partial state.")
 
         stage_records = partial.get("stage_records", [])
+        slice_gradvac_state = {
+            str(name): float(value)
+            for name, value in partial.get("slice_gradvac_state", {}).items()
+        }
         completed = len(stage_records)
         start_stage = completed + 1
         seen_tasks = sequence.tasks[:completed]
@@ -474,6 +479,7 @@ def run_sequence(
             slice_pcgrad_c=slice_pcgrad_c,
             slice_gradvac_phi=slice_gradvac_phi,
             slice_gradvac_beta=slice_gradvac_beta,
+            slice_gradvac_state=slice_gradvac_state,
             slice_magnitude_preserve=slice_magnitude_preserve,
             slice_nullspace_rank=slice_nullspace_rank,
             slice_nullspace_sv_threshold=slice_nullspace_sv_threshold,
@@ -579,6 +585,7 @@ def run_sequence(
                 "task_order": task_order,
                 "completed_stages": idx,
                 "stage_records": stage_records,
+                "slice_gradvac_state": slice_gradvac_state,
             },
         )
 

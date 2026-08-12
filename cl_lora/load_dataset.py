@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Tuple, Union
 
 import requests
+import torch
 from datasets import Dataset
 
 logger = logging.getLogger("cl_lora.load_dataset")
@@ -119,8 +120,8 @@ def _resolve_superni_task_name(task_name: str) -> str:
 
 def _split_dataset(dataset: Dataset, eval_size: int, seed: int) -> Tuple[Dataset, Dataset]:
     dataset = dataset.shuffle(seed=seed)
-    if len(dataset) <= 1:
-        return dataset, dataset
+    if len(dataset) < 2:
+        raise ValueError("Train/evaluation splitting requires at least 2 records.")
 
     test_size = min(eval_size, len(dataset) - 1)
     split = dataset.train_test_split(test_size=test_size, seed=seed)
@@ -174,7 +175,9 @@ def _format_superni_instance(example: dict, definition: str) -> dict:
     input_text = _to_text(example.get("input", ""))
 
     output = example.get("output", "")
-    output_text = _to_text(output[0] if isinstance(output, list) and output else output)
+    references = [_to_text(item) for item in output] if isinstance(output, list) else [_to_text(output)]
+    references = [item for item in references if item]
+    output_text = references[0] if references else ""
 
     instruction = f"{definition}\n\nInput: {input_text}"
     prompt = _build_chat_prompt(instruction)
@@ -183,7 +186,32 @@ def _format_superni_instance(example: dict, definition: str) -> dict:
         "text": text,
         "prompt": prompt,
         "target": output_text,
+        "references": references,
     }
+
+
+class CompletionOnlyDataCollator:
+    """Pad causal-LM examples and mask prompt tokens from the labels."""
+
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def __call__(self, features):
+        max_len = max(len(feature["input_ids"]) for feature in features)
+        input_ids, attention_masks, labels = [], [], []
+        for feature in features:
+            ids = list(feature["input_ids"])
+            mask = list(feature.get("attention_mask", [1] * len(ids)))
+            prompt_length = min(int(feature.get("prompt_length", 0)), len(ids))
+            padding = max_len - len(ids)
+            input_ids.append(ids + [self.tokenizer.pad_token_id] * padding)
+            attention_masks.append(mask + [0] * padding)
+            labels.append([-100] * prompt_length + ids[prompt_length:] + [-100] * padding)
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
 
 
 def _pick_trace_fields(example: dict) -> Tuple[str, str]:

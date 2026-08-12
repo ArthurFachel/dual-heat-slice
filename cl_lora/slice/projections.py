@@ -304,6 +304,7 @@ def project_gradients_advanced(
     always_project: bool,
     add_retain_grad: bool,
     global_projection: bool,
+    gradvac_state: Dict[str, float] | None = None,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     """Dispatch projection using the selected method.
 
@@ -366,8 +367,8 @@ def project_gradients_advanced(
         delta=per_layer_threshold_delta,
     )
 
-    # GradVac keeps a running EMA of target cosine per-module.
-    phi_state: Dict[str, float] = {n: float(gradvac_phi) for n in grads_current}
+    # Caller-owned state preserves the target-cosine EMA across calls/stages.
+    phi_state = gradvac_state if gradvac_state is not None else {}
 
     for name, g_c in grads_current.items():
         g_r = grads_retain.get(name)
@@ -388,7 +389,7 @@ def project_gradients_advanced(
                 g_c, g_r, k=nullspace_rank, sv_thresh=nullspace_sv_threshold,
             )
             action = "nullspace"
-        elif not _should_project(cos, tau, always_project):
+        elif method != "gradvac" and not _should_project(cos, tau, always_project):
             g_new = g_c
             action = "skipped"
         elif method == "pcgrad":
@@ -402,7 +403,7 @@ def project_gradients_advanced(
             g_new, observed_cos = _gradvac_update(g_c, g_r, phi=phi)
             # EMA update of target cosine.
             phi_state[name] = (1.0 - gradvac_beta) * phi + gradvac_beta * observed_cos
-            action = "gradvac"
+            action = "gradvac" if observed_cos < phi else "skipped"
         elif method == "magnitude_preserving":
             g_new_flat = _pcgrad_update(g_c, g_r)
             g_new = _magnitude_preserve(g_new_flat, orig_norm).to(g_c.dtype)
@@ -425,5 +426,8 @@ def project_gradients_advanced(
             "retain_norm": float(g_r_flat.norm().item()),
             "projected_norm": float(g_new.float().view(-1).norm().item()),
         }
+        if method == "gradvac":
+            stats["modules"][name]["phi_before"] = phi
+            stats["modules"][name]["phi_after"] = phi_state[name]
 
     return projected, stats

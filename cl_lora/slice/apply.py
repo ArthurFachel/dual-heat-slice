@@ -177,5 +177,10 @@ def apply_slice_inits(
 
         num_written += 1
 
+    if num_written != len(inits):
+        raise RuntimeError(
+            "Slice initialization incomplete: complete application required; "
+            f"applied {num_written} of {len(inits)} targets (skipped={num_skipped})."
+        )
     logger.info("Applied slice A/B to %d LoRA modules (skipped=%d)", num_written, num_skipped)
     return num_written

@@ -308,10 +308,10 @@ NI292 = SuperNITask(
 
 NI488 = SuperNITask(
     ni_id="NI488",
-    name="task448_opus_paracrawl_en_tl_translation",
-    source="Synthetic Program Execution",
+    name="task488_extract_all_alphabetical_elements_from_list_in_order",
+    source="Synthetic Instructions",
     category="generation",
-    hf_config="task448_opus_paracrawl_en_tl_translation",
+    hf_config="task488_extract_all_alphabetical_elements_from_list_in_order",
 )
 NI024 = SuperNITask(
     ni_id="NI024",
@@ -850,6 +850,8 @@ def all_superni_tasks() -> List[SuperNITask]:
     tasks = []
     for seq in SEQUENCES.values():
         for task in seq.tasks:
+            if not isinstance(task, SuperNITask):
+                continue
             if task.ni_id not in seen:
                 seen.add(task.ni_id)
                 tasks.append(task)

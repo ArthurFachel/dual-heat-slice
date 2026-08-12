@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -12,8 +13,10 @@ from datasets import concatenate_datasets
 from ..lora_config import build_lora_config
 from ..load_dataset import load_training_dataset
 from .cache import (
+    SliceCacheEntry,
     load_slice_cache,
     make_cache_key,
+    save_slice_cache,
     save_ab_stats_csv,
     save_projection_stats_json,
 )
@@ -53,7 +56,7 @@ def compute_loram_inits(
     config: SliceInitConfig,
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """Compute LoRAM initialization (DST-based, no gradients needed)."""
-    lora_cfg = build_lora_config()
+    lora_cfg = build_lora_config(r=int(config.rank or 128), lora_alpha=config.lora_alpha)
     target_params = target_weight_params(model, lora_cfg.target_modules)
     if not target_params:
         raise RuntimeError("No target modules matched for LoRAM initialization.")
@@ -244,6 +247,7 @@ def compute_slice_inits(
                 always_project=bool(config.grad_project_always),
                 add_retain_grad=bool(config.add_retain_grad),
                 global_projection=global_projection,
+                gradvac_state=config.gradvac_state,
             )
             logger.info("Built advanced projected gradient matrix for %d modules", len(combined))
         else:
@@ -314,6 +318,30 @@ def _task_fingerprint(task_obj) -> Optional[Dict[str, object]]:
     return fp
 
 
+def _model_cache_identity(model: torch.nn.Module) -> dict[str, Any]:
+    """Identify both the source revision and the model's current live weights."""
+    cfg = getattr(model, "config", None)
+    identity: dict[str, Any] = {
+        "class": model.__class__.__name__,
+        "name_or_path": getattr(cfg, "_name_or_path", None) or getattr(model, "name_or_path", None),
+        "prompt_format": "chat_template_v2",
+    }
+    revision = getattr(cfg, "_commit_hash", None)
+    if revision:
+        identity["revision"] = str(revision)
+
+    digest = hashlib.sha256()
+    with torch.no_grad():
+        for name, tensor in sorted(model.state_dict().items()):
+            cpu = tensor.detach().cpu().contiguous()
+            digest.update(name.encode("utf-8"))
+            digest.update(str(tuple(cpu.shape)).encode("ascii"))
+            digest.update(str(cpu.dtype).encode("ascii"))
+            digest.update(cpu.view(torch.uint8).numpy().tobytes())
+    identity["weight_fingerprint"] = digest.hexdigest()
+    return identity
+
+
 def summarize_projection_stats(projection_stats: Dict[str, Any]) -> Dict[str, Any]:
     """Compact summary of one stage's gradient projection, for the run's stage report.
 
@@ -336,12 +364,20 @@ def summarize_projection_stats(projection_stats: Dict[str, Any]) -> Dict[str, An
     mods = projection_stats.get("modules") or {}
     gamma = g.get("gamma")
 
+    changed_actions = {
+        "pcgrad", "pcgrad_c", "gradvac", "nullspace",
+        "magnitude_preserving", "mag_preserve_pcgrad",
+    }
+    n_changed = sum(
+        1 for m in mods.values()
+        if isinstance(m, dict) and m.get("action") in changed_actions
+    )
     if "do_project" in g:
         fired = bool(g.get("do_project"))
     elif gamma is not None:
         fired = float(gamma) > 0.0
     else:
-        fired = False
+        fired = n_changed > 0
 
     sum_cur2 = 0.0
     sum_ret2 = 0.0
@@ -377,6 +413,7 @@ def summarize_projection_stats(projection_stats: Dict[str, Any]) -> Dict[str, An
         "rel_change": rel_change,
         "n_modules_conflict": n_conflict,
         "n_modules_total": n_total,
+        "n_modules_changed": n_changed,
     }
 
 
@@ -415,7 +452,7 @@ def load_or_compute_slice_inits(
             )
 
     # Usa o mesmo default (128) que compute_slice_inits e orchestrator.py --rank
-    lora_cfg = build_lora_config(r=int(config.rank or 128))
+    lora_cfg = build_lora_config(r=int(config.rank or 128), lora_alpha=config.lora_alpha)
     lora_payload = {
         "r": int(getattr(lora_cfg, "r", 0) or 0),
         "lora_alpha": float(getattr(lora_cfg, "lora_alpha", 1.0)),
@@ -459,13 +496,7 @@ def load_or_compute_slice_inits(
         "nullspace_sv_threshold": 0.0 if is_lora_ga else float(config.nullspace_sv_threshold),
         "svd_selection": str(config.svd_selection),
         "lora": lora_payload,
-        "model": {
-            "class": model.__class__.__name__,
-            # Bump when the prompt/target rendering changes so cached gradients
-            # (which are computed from the rendered text but not hashed on it)
-            # are invalidated. v2 = native chat template + real EOS termination.
-            "prompt_format": "chat_template_v2",
-        },
+        "model": _model_cache_identity(model),
     }
     cache_key = make_cache_key(payload)
     cache_root = os.path.join(config.cache_dir, cache_key)
@@ -493,12 +524,11 @@ def load_or_compute_slice_inits(
             config=config,
         )
 
-    # Inits live only in memory: by design we do not persist <cache>/<key>/inits/*.pt.
-    # The meta + stats files stay so the run record is preserved.
-    os.makedirs(cache_root, exist_ok=True)
-    with open(os.path.join(cache_root, "meta.json"), "w", encoding="utf-8") as f:
-        json.dump({"payload": payload}, f, sort_keys=True, indent=2)
+    save_slice_cache(
+        config.cache_dir, cache_key, SliceCacheEntry(inits=inits),
+        meta={"payload": payload},
+    )
     save_ab_stats_csv(config.cache_dir, cache_key, inits)
     save_projection_stats_json(config.cache_dir, cache_key, projection_stats)
-    logger.info("Computed slice inits (not persisted): cache_dir=%s cache_key=%s modules=%d", config.cache_dir, cache_key, len(inits))
+    logger.info("Computed and cached slice inits: cache_dir=%s cache_key=%s modules=%d", config.cache_dir, cache_key, len(inits))
     return inits, cache_root, summarize_projection_stats(projection_stats)

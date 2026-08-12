@@ -55,6 +55,7 @@ SYNC_STAGE_RECORDS   = True
 RANK128_RESULTS     = Path("/mnt/D-SSD/cl-lora-ramiro/results")
 B_SSD_RESULTS       = Path("/mnt/B-SSD/jmpasquali/fix-cl-lora/cl-lora/results")
 ALPHA_SWEEP_RESULTS = Path("/mnt/D-SSD/slice-neurips2026-cache/alpha_sweep")
+MOTOX_RESULTS       = Path("/mnt/E-SSD/user/all_results")
 CL_BASELINES_ROOTS = [
     Path("/mnt/E-SSD/cl-baselines/cl-lora/results/TRACE/basic_methods"),
     Path("/mnt/E-SSD/cl-baselines/cl-lora/results/NI-Seq-G2/basic_methods"),
@@ -347,6 +348,16 @@ def load_run(run_dir: Path) -> dict | None:
     with metrics_path.open() as f:
         metrics = json.load(f)
 
+    # Normalize historical Qwen outputs to the canonical repository schema.
+    legacy_metric_keys = {
+        "average_accuracy_ap": "AP",
+        "final_performance_fp": "FP",
+        "avg_forgetting": "Forget",
+    }
+    for legacy, canonical in legacy_metric_keys.items():
+        if canonical not in metrics and legacy in metrics:
+            metrics[canonical] = metrics[legacy]
+
     # If all metrics are null but stage records exist, recompute on the fly.
     if all(metrics.get(m) is None for m in METRICS):
         has_stage_records = any(
@@ -395,10 +406,14 @@ def collect_runs(*roots: Path | tuple[Path, str | None]) -> list[dict]:
     rank_tag is given (e.g. "r64", "r128") it is appended to every method
     name loaded from that root so results from different ranks are distinct.
     """
-    best: dict[tuple[str, str], dict] = {}
+    best: dict[tuple[str, str, object, object, str], dict] = {}
 
-    def _consider(run: dict) -> None:
-        key = (run["seq_name"], run["method"])
+    def _consider(run: dict, source_root: Path) -> None:
+        config = run.get("config", {})
+        key = (
+            run["seq_name"], run["method"], config.get("seed"),
+            config.get("rank", config.get("lora_rank")), str(source_root.resolve()),
+        )
         if key not in best or _run_completeness(run) > _run_completeness(best[key]):
             best[key] = run
 
@@ -426,7 +441,7 @@ def collect_runs(*roots: Path | tuple[Path, str | None]) -> list[dict]:
                 if run is not None:
                     if rank_tag and not run["method"].endswith(f"_{rank_tag}"):
                         run["method"] = f"{run['method']}_{rank_tag}"
-                    _consider(run)
+                    _consider(run, root)
                 continue
             # Standard 2-level layout: <root>/<seq_name>/<method>/
             try:
@@ -445,7 +460,7 @@ def collect_runs(*roots: Path | tuple[Path, str | None]) -> list[dict]:
                     continue
                 if rank_tag and not run["method"].endswith(f"_{rank_tag}"):
                     run["method"] = f"{run['method']}_{rank_tag}"
-                _consider(run)
+                _consider(run, root)
 
     return list(best.values())
 

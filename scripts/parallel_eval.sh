@@ -23,7 +23,7 @@ export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-RUNS_ROOT="${RUNS_ROOT:-/mnt/E-SSD/dev-cl-lora/cl-lora/results/NI-Seq-Opposite-v4}"
+RUNS_ROOT="${RUNS_ROOT:-${REPO_ROOT}/results}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 PARALLEL="${PARALLEL:-2}"
 EXTRA_ARGS=("$@")

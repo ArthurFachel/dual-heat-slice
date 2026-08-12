@@ -31,48 +31,48 @@ def accumulate_gradients(
     # skip them and .grad would stay None.  Temporarily re-enable so we
     # can collect gradients, then restore the original state.
     saved_requires_grad = {name: p.requires_grad for name, p in target_params.items()}
-    for p in target_params.values():
-        p.requires_grad_(True)
-
-    # Enable gradient checkpointing to reduce activation memory,
-    # allowing larger batch sizes during gradient accumulation.
     _had_gc = getattr(model, "is_gradient_checkpointing", False)
     _use_cache = getattr(getattr(model, "config", None), "use_cache", None)
-    if not _had_gc and hasattr(model, "gradient_checkpointing_enable"):
-        try:
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False},
-            )
-        except TypeError:
-            model.gradient_checkpointing_enable()
-
     steps = 0
-    model.train()
-    for batch in dataloader:
-        if max_steps and steps >= max_steps:
-            break
-        batch = {k: v.to(device) for k, v in batch.items()}
-        outputs = model(**batch)
-        loss = outputs.loss
-        loss.backward()
-        for name, param in target_params.items():
-            if param.grad is None:
-                raise RuntimeError(
-                    f"param.grad is None for {name} despite requires_grad=True. "
-                    "This should not happen -- check model wiring."
+    try:
+        for p in target_params.values():
+            p.requires_grad_(True)
+
+        # Enable gradient checkpointing to reduce activation memory. This setup
+        # is inside the protected region because enabling can itself fail.
+        if not _had_gc and hasattr(model, "gradient_checkpointing_enable"):
+            try:
+                model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False},
                 )
-            grads[name] = grads[name] + param.grad.detach()
+            except TypeError:
+                model.gradient_checkpointing_enable()
+
+        model.train()
+        for batch in dataloader:
+            if max_steps and steps >= max_steps:
+                break
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            loss = outputs.loss
+            loss.backward()
+            for name, param in target_params.items():
+                if param.grad is None:
+                    raise RuntimeError(
+                        f"param.grad is None for {name} despite requires_grad=True. "
+                        "This should not happen -- check model wiring."
+                    )
+                grads[name] = grads[name] + param.grad.detach()
+            model.zero_grad(set_to_none=True)
+            steps += 1
+    finally:
         model.zero_grad(set_to_none=True)
-        steps += 1
-
-    # Restore gradient checkpointing and use_cache state.
-    if not _had_gc and hasattr(model, "gradient_checkpointing_disable"):
-        model.gradient_checkpointing_disable()
-    if _use_cache is not None and hasattr(model, "config"):
-        model.config.use_cache = _use_cache
-
-    for name, p in target_params.items():
-        p.requires_grad_(saved_requires_grad[name])
+        if not _had_gc and hasattr(model, "gradient_checkpointing_disable"):
+            model.gradient_checkpointing_disable()
+        if _use_cache is not None and hasattr(model, "config"):
+            model.config.use_cache = _use_cache
+        for name, p in target_params.items():
+            p.requires_grad_(saved_requires_grad[name])
 
     return grads, steps
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --job-name=cl_lora_lean
-#SBATCH --output=/home/user/Sout/%j%x.out
-#SBATCH --error=/home/user/Sout/%j%x.out
+#SBATCH --output=logs/%j%x.out
+#SBATCH --error=logs/%j%x.out
 
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
@@ -30,7 +30,8 @@ echo "Starting the execution"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export TOKENIZERS_PARALLELISM="false"
 
-REPO_ROOT="${REPO_ROOT:-/home/user/cl-lora}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 CONDA_ENV="${CONDA_ENV:-cl_lora}"
 
 cd "${REPO_ROOT}"
@@ -40,9 +41,8 @@ echo "Repo root: ${REPO_ROOT}"
 
 # --- memory-economy paths -------------------------------------------------
 # Shared base model lives once per (cache_dir, model_name); each run's
-# checkpoints/base_model becomes a symlink into this cache. Slice-cache
-# inits/*.pt are deleted in-process after apply (handled by the Python
-# side of initialize_lora_with_slice).
+# checkpoints/base_model becomes a symlink into this cache. Persisted SLICE
+# initializations are shared only when their full cache identity matches.
 export BASE_MODEL_CACHE="${BASE_MODEL_CACHE:-${REPO_ROOT}/outputs/base_models}"
 export SLICE_CACHE_DIR="${SLICE_CACHE_DIR:-${REPO_ROOT}/slice_cache}"
 mkdir -p "${BASE_MODEL_CACHE}" "${SLICE_CACHE_DIR}"
@@ -50,7 +50,7 @@ mkdir -p "${BASE_MODEL_CACHE}" "${SLICE_CACHE_DIR}"
 # --- sweep config (override via env vars) ---------------------------------
 SEQUENCES_RAW="${SEQUENCES:-NI-Seq-G2}"
 INITS_RAW="${ONLY_INITS:-lora_vanilla loram lora_ga slice}"
-ONLY_CL_RAW="${ONLY_CL:-o_lora inflora sapt}"
+ONLY_CL_RAW="${ONLY_CL:-vanilla o_lora dual_heat}"
 RUN_PREFIX="${RUN_PREFIX:-compose}"
 RUN_SUFFIX="${RUN_SUFFIX:-cluster}"
 RANK="${RANK:-32}"
