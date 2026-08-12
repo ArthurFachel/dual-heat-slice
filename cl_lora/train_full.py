@@ -59,9 +59,9 @@ _patch_accelerate_unwrap_model_compat()
 
 load_dotenv()
 
-MODEL_NAME = "roneneldan/TinyStories-33M"
+MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+# MODEL_NAME = "roneneldan/TinyStories-33M"
 # MODEL_NAME = "facebook/opt-350m"
-# MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 # MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 # MODEL_NAME = "meta-llama/Llama-3.1-8B-Instruct"
 HF_TOKEN = os.getenv("HUGGING_TOKEN")
@@ -80,15 +80,13 @@ def build_tokenizer(model_name: str = MODEL_NAME, hf_token: str | None = HF_TOKE
 def load_base_model(
     model_name: str = MODEL_NAME,
     hf_token: str | None = HF_TOKEN,
-    torch_dtype: torch.dtype = torch.float16,
+    torch_dtype: torch.dtype = torch.float32,
     device_map: str | None = None,
 ):
-    """Load model in fp16 para economizar memoria.
+    """Load model in fp32 — Trainer gerencia fp16 via gradient scaler.
 
-    Importante: quando carregado em fp16, o Trainer DEVE rodar com
-    fp16=False e bf16=False — senao o gradient scaler tenta unscale
-    gradientes que ja estao em half precision e quebra.
-    O otimizador promove internamente pra fp32 no step.
+    Para modelos pequenos como TinyStories-33M, fp32 cabe com folga
+    e o gradient scaler evita NaN no treino em half precision.
     """
     local = Path(model_name).is_dir()
     kwargs: dict = dict(
@@ -190,7 +188,7 @@ def train_on_task_full(
         eval_strategy="steps",
         eval_steps=eval_steps,
         bf16=False,
-        fp16=False,
+        fp16=True,
         dataloader_num_workers=2,
         report_to="none",
         remove_unused_columns=True,

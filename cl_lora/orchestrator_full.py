@@ -404,11 +404,18 @@ def run_sequence(
     print(f"  Tasks: {len(sequence.tasks)}")
 
     metrics = summary.get("metrics", {})
-    print(f"  Avg performance (AP): {metrics.get('average_performance', 'N/A'):.4f}")
-    print(f"  Avg forgetting:       {metrics.get('average_forgetting', 'N/A'):.4f}")
-    print(f"  Forward transfer:     {metrics.get('forward_transfer', 'N/A'):.4f}")
-    print(f"  Backward transfer:    {metrics.get('backward_transfer', 'N/A'):.4f}")
-    print(f"  Intransigence:        {metrics.get('intransigence', 'N/A'):.4f}")
+
+    def _fmt(val, decimals=4):
+        """Format metric value — float gets decimals, str/Nones pass through."""
+        if isinstance(val, (int, float)):
+            return f"{val:.{decimals}f}"
+        return str(val)
+
+    print(f"  Avg performance (AP): {_fmt(metrics.get('average_performance', 'N/A'))}")
+    print(f"  Avg forgetting:       {_fmt(metrics.get('average_forgetting', 'N/A'))}")
+    print(f"  Forward transfer:     {_fmt(metrics.get('forward_transfer', 'N/A'))}")
+    print(f"  Backward transfer:    {_fmt(metrics.get('backward_transfer', 'N/A'))}")
+    print(f"  Intransigence:        {_fmt(metrics.get('intransigence', 'N/A'))}")
 
     print(f"\nResults saved to {run_output_dir}")
     return final_payload
@@ -434,8 +441,8 @@ def main():
     # Training
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--epochs", type=float, default=3.0)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--max-seq-length", type=int, default=256)
     parser.add_argument("--warmup-ratio", type=float, default=0.01)
     parser.add_argument("--eval-size", type=int, default=200)
