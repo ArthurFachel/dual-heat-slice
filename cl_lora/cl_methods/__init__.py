@@ -13,6 +13,9 @@ from .dual_heat import DualHeatCLMethod
 from .dual_heat_full import DualHeatFullCLMethod
 from .o_lora import OLoRAMethod
 from .vanilla import VanillaCLMethod
+from .ewc import EWCMethod
+from .replay import ReplayMethod
+from .full_finetune import FullFineTuneMethod
 
 
 REGISTRY: Dict[str, Type[CLMethod]] = {
@@ -20,6 +23,12 @@ REGISTRY: Dict[str, Type[CLMethod]] = {
     "o_lora": OLoRAMethod,
     "dual_heat": DualHeatCLMethod,
     "dual_heat_full": DualHeatFullCLMethod,
+    "full_finetune": FullFineTuneMethod,
+    "activation_protection": DualHeatCLMethod,
+    "sensitivity_protection": DualHeatCLMethod,
+    "lateral_inhibition": DualHeatCLMethod,
+    "ewc": EWCMethod,
+    "replay": ReplayMethod,
 }
 
 
@@ -28,6 +37,15 @@ def build_cl_method(name: str, **kwargs: Any) -> CLMethod:
     by methods that don't accept them, so a single argparse namespace can be
     forwarded to any method without per-method dispatch in callers."""
     key = (name or "vanilla").lower()
+    if key == "activation_protection":
+        kwargs.setdefault("importance", "activation")
+        kwargs.setdefault("lateral_inhibition", False)
+    elif key == "sensitivity_protection":
+        kwargs.setdefault("importance", "sensitivity")
+        kwargs.setdefault("lateral_inhibition", False)
+    elif key == "lateral_inhibition":
+        kwargs.setdefault("slow_strength", 0.0)
+        kwargs.setdefault("lateral_inhibition", True)
     if key not in REGISTRY:
         raise ValueError(
             f"Unknown CL method: {name!r}. Available: {sorted(REGISTRY.keys())}"
@@ -35,7 +53,10 @@ def build_cl_method(name: str, **kwargs: Any) -> CLMethod:
     cls = REGISTRY[key]
     accepted = _accepted_kwargs(cls)
     filtered = {k: v for k, v in kwargs.items() if k in accepted}
-    return cls(**filtered)
+    instance = cls(**filtered)
+    if key in {"activation_protection", "sensitivity_protection", "lateral_inhibition"}:
+        instance.name = key
+    return instance
 
 
 def _accepted_kwargs(cls: Type[CLMethod]) -> set:

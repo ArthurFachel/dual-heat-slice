@@ -248,11 +248,13 @@ def train_one_task(
 
     # Build dataset
     train_dataset, eval_dataset = build_qwen_dataset(task, seed=seed, tokenizer=tokenizer)
+    original_train_dataset = train_dataset
+    train_dataset = cl_method.prepare_train_dataset(train_dataset)
     train_tok = tokenize_dataset(train_dataset, tokenizer, max_length=max_seq_length)
     eval_tok = tokenize_dataset(eval_dataset, tokenizer, max_length=max_seq_length)
 
-    # Build PEFT model
-    peft_model = get_peft_model(model, lora_config)
+    # Full fine-tuning is an explicit baseline; all other methods use LoRA.
+    peft_model = model if cl_method.name == "full_finetune" else get_peft_model(model, lora_config)
     active_adapter = "default"
 
     # CL method pre-training hook
@@ -313,14 +315,14 @@ def train_one_task(
     cl_method.post_train(
         peft_model,
         tokenizer=tokenizer,
-        train_dataset=train_tok,
+        train_dataset=original_train_dataset,
         device=cl_device,
         stage_idx=stage_idx,
         task_name=task.name,
     )
 
-    # Merge adapter into base model
-    merged_model = peft_model.merge_and_unload()
+    merge_fn = getattr(peft_model, "merge_and_unload", None)
+    merged_model = merge_fn() if callable(merge_fn) else peft_model
 
     return merged_model
 
@@ -360,7 +362,10 @@ def run_experiment(
     # Load model
     print(f"\n{'='*60}")
     print(f"Loading model: {model_name}")
-    model = load_qwen_model(model_name)
+    model = load_qwen_model(
+        model_name,
+        torch_dtype=torch.float32 if method == "full_finetune" else None,
+    )
     tokenizer = load_qwen_tokenizer(model_name)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -370,7 +375,12 @@ def run_experiment(
 
     # CL method
     cl_kwargs = {}
-    if method == "dual_heat":
+    if method in {
+        "dual_heat",
+        "activation_protection",
+        "sensitivity_protection",
+        "lateral_inhibition",
+    }:
         cl_kwargs = {
             "fast_decay": fast_decay,
             "fast_strength": fast_strength,
@@ -379,6 +389,10 @@ def run_experiment(
             "slow_window": slow_window,
             "lateral_inhibition": lateral_inhibition,
         }
+    if method == "replay":
+        cl_kwargs = {"replay_size": kwargs.get("replay_size", 128), "seed": seed}
+    elif method == "ewc":
+        cl_kwargs = {"lambda_ewc": kwargs.get("lambda_ewc", 10.0)}
     elif method == "o_lora":
         cl_kwargs = {"lambda_orth": kwargs.get("lambda_orth", 0.5)}
 
@@ -510,14 +524,23 @@ def compare_all_methods(
     model_name: str = QWEN_MODEL,
     seed: int = 42,
     output_dir: str = "results/qwen_experiment",
+    learning_rate: float = 5e-5,
+    num_epochs: float = 3.0,
+    per_device_batch_size: int = 8,
+    gradient_accumulation_steps: int = 2,
+    lora_rank: int = 16,
+    lora_alpha: int = 8,
+    **kwargs: Any,
 ):
     """Run all methods sequentially and print comparison table."""
     methods = [
-        {"method": "vanilla", "label": "Vanilla LoRA (baseline)", "kwargs": {}},
-        {"method": "o_lora", "label": "O-LoRA", "kwargs": {"lambda_orth": 0.5}},
-        {"method": "dual_heat", "label": "DualHeat", "kwargs": {}},
-        {"method": "dual_heat", "label": "DualHeat (EWC only, no lateral inhibition)", "kwargs": {"lateral_inhibition": False}},
-        {"method": "dual_heat", "label": "DualHeat (strong EWC, beta=5.0)", "kwargs": {"slow_strength": 5.0}},
+        {"method": "full_finetune", "label": "Full fine-tuning", "kwargs": {}},
+        {"method": "vanilla", "label": "Vanilla LoRA", "kwargs": {}},
+        {"method": "activation_protection", "label": "LoRA + activation protection", "kwargs": {}},
+        {"method": "sensitivity_protection", "label": "LoRA + sensitivity protection", "kwargs": {}},
+        {"method": "lateral_inhibition", "label": "LoRA + lateral inhibition", "kwargs": {}},
+        {"method": "replay", "label": "LoRA + replay", "kwargs": {"replay_size": 128}},
+        {"method": "ewc", "label": "LoRA + EWC", "kwargs": {"lambda_ewc": 10.0}},
     ]
 
     results = []
@@ -531,6 +554,12 @@ def compare_all_methods(
             method=cfg["method"],
             seed=seed,
             output_dir=output_dir,
+            learning_rate=learning_rate,
+            num_epochs=num_epochs,
+            per_device_batch_size=per_device_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
             **kwargs,
         )
         results.append({"label": cfg["label"], **metrics})
@@ -558,7 +587,7 @@ def main():
     parser = argparse.ArgumentParser(description="Qwen 0.5B Continual Learning experiment")
     parser.add_argument("--model", default=QWEN_MODEL,
                         help=f"Model name (default: {QWEN_MODEL})")
-    parser.add_argument("--method", choices=["vanilla", "o_lora", "dual_heat"], default="dual_heat",
+    parser.add_argument("--method", choices=sorted({"vanilla", "full_finetune", "activation_protection", "sensitivity_protection", "lateral_inhibition", "replay", "ewc", "o_lora", "dual_heat"}), default="dual_heat",
                         help="CL method (default: dual_heat)")
     parser.add_argument("--compare-all", action="store_true",
                         help="Run all methods sequentially and compare")
@@ -591,6 +620,19 @@ def main():
             model_name=args.model,
             seed=args.seed,
             output_dir=args.output_dir,
+            learning_rate=args.lr,
+            num_epochs=args.epochs,
+            per_device_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.grad_accum,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            slow_strength=args.slow_strength,
+            fast_decay=args.fast_decay,
+            fast_strength=args.fast_strength,
+            fast_decay_rate=args.fast_decay_rate,
+            slow_window=args.slow_window,
+            lateral_inhibition=not args.no_lateral_inhibition,
+            lambda_orth=args.o_lora_lambda,
         )
     else:
         run_experiment(

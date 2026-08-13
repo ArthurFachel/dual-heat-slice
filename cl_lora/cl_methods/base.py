@@ -42,6 +42,10 @@ class CLMethod:
         """Return an extra scalar loss to add during each training step, or None."""
         return None
 
+    def prepare_train_dataset(self, dataset: Any) -> Any:
+        """Optionally augment the current task dataset before tokenization."""
+        return dataset
+
     def post_train(
         self,
         lora_model: torch.nn.Module,

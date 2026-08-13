@@ -98,8 +98,11 @@ class _DualHeatModule(nn.Module):
         slow_strength: float = 2.0,
         slow_window: Optional[int] = None,
         lateral_inhibition: bool = True,
+        importance: str = "activation",
     ):
         super().__init__()
+        if importance not in {"activation", "sensitivity"}:
+            raise ValueError("importance must be activation or sensitivity")
         self.out_features = out_features
         self.fast_decay = fast_decay
         self.fast_strength = fast_strength
@@ -107,6 +110,7 @@ class _DualHeatModule(nn.Module):
         self.slow_strength = slow_strength
         self.slow_window = slow_window
         self.lateral_inhibition = lateral_inhibition
+        self.importance = importance
 
         # Heat state keyed by device string:  str -> Dict[str, Tensor]
         self._per_device: Dict[str, Dict[str, torch.Tensor]] = {}
@@ -173,8 +177,21 @@ class _DualHeatModule(nn.Module):
         state["slow_n"] += 1
         n_true = state["slow_n"].item()
         n_eff = min(n_true, self.slow_window) if self.slow_window is not None else n_true
-        state["slow_heat"].add_((post_mag - state["slow_heat"]) / float(n_eff))
+        if self.importance == "activation":
+            state["slow_heat"].add_((post_mag - state["slow_heat"]) / float(n_eff))
         state["step"] += 1
+
+    def sensitivity_hook(self, activation: torch.Tensor):
+        def hook(grad: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                state = self._get_or_restore(grad.device, dtype=grad.dtype)
+                dims = tuple(range(grad.dim() - 1))
+                signal = (activation.abs() * grad.detach().abs()).float().mean(dim=dims)
+                n = max(int(state["slow_n"].item()), 1)
+                n_eff = min(n, self.slow_window) if self.slow_window else n
+                state["slow_heat"].add_((signal - state["slow_heat"]) / float(n_eff))
+            return grad
+        return hook
 
     def get_ewc_scale(self, device: torch.device, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         """Return per-neuron EWC scale: 1 / (1 + beta * slow_heat)."""
@@ -227,6 +244,7 @@ class DualHeatCLMethod(CLMethod):
         slow_strength: float = 2.0,
         slow_window: Optional[int] = None,
         lateral_inhibition: bool = True,
+        importance: str = "activation",
         **kwargs: Any,
     ):
         super().__init__(
@@ -236,6 +254,7 @@ class DualHeatCLMethod(CLMethod):
             slow_strength=slow_strength,
             slow_window=slow_window,
             lateral_inhibition=lateral_inhibition,
+            importance=importance,
             **kwargs,
         )
         self.fast_decay = float(fast_decay)
@@ -244,6 +263,7 @@ class DualHeatCLMethod(CLMethod):
         self.slow_strength = float(slow_strength)
         self.slow_window = slow_window
         self.lateral_inhibition = bool(lateral_inhibition)
+        self.importance = str(importance)
 
         self._dual_modules: Dict[str, _DualHeatModule] = {}
         self._orig_forwards: List[callable] = []
@@ -284,25 +304,56 @@ class DualHeatCLMethod(CLMethod):
         def patched_forward(x, *args, **kwargs):
             # Delegate PEFT details (ModuleDicts, casts, variants, mixed adapters,
             # merged/disabled states) to the supported native implementation.
-            result = original_forward(x, *args, **kwargs)
-            if dh_mod.slow_strength > 0.0 and result.requires_grad:
-                result.register_hook(self._make_ewc_hook_on_output(name))
+            # Recompute the trainable adapter branch directly. This avoids
+            # calling the frozen base layer twice and leaves the base path
+            # unchanged in the returned representation.
+            adapter_name = self._active_adapter
+            base_layer = getattr(mod, "base_layer", None)
+            lora_a = getattr(mod, "lora_A", {})
+            lora_b = getattr(mod, "lora_B", {})
+            dropout = getattr(mod, "lora_dropout", {})
+            scaling = getattr(mod, "scaling", {})
+            direct_adapter_path = (
+                callable(base_layer)
+                and adapter_name in lora_a
+                and adapter_name in lora_b
+                and adapter_name in dropout
+                and adapter_name in scaling
+            )
+            if direct_adapter_path:
+                dropped = dropout[adapter_name](x)
+                adapter_delta = lora_b[adapter_name](lora_a[adapter_name](dropped)) * scaling[adapter_name]
+                try:
+                    base_result = base_layer(x, *args, **kwargs)
+                except TypeError:
+                    base_result = base_layer(x)
+            else:
+                # Keep a native-PEFT fallback for unsupported module variants.
+                result = original_forward(x, *args, **kwargs)
+                base_result = result
+                adapter_delta = result
+
+            if dh_mod.importance == "sensitivity" and adapter_delta.requires_grad:
+                adapter_delta.register_hook(dh_mod.sensitivity_hook(adapter_delta.detach()))
+
+            if dh_mod.slow_strength > 0.0 and adapter_delta.requires_grad:
+                adapter_delta.register_hook(self._make_ewc_hook_on_output(name))
 
             # ── Lateral inhibition ──────────────────────────────────────
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 \
                     and out_features > 1 and mod.training:
-                state = dh_mod._get_or_restore(result.device, dtype=result.dtype)
+                state = dh_mod._get_or_restore(adapter_delta.device, dtype=adapter_delta.dtype)
                 fh = state["fast_heat"]
                 sum_h = fh.sum()
                 mean_others = (sum_h - fh) / float(out_features - 1)
-                scale = (1.0 + dh_mod.fast_strength * mean_others).to(result.dtype)
-                result = result / scale
+                scale = (1.0 + dh_mod.fast_strength * mean_others).to(adapter_delta.dtype)
+                adapter_delta = adapter_delta / scale
 
             # ── Heat tracking ───────────────────────────────────────────
             if mod.training:
-                dh_mod.update_heat(result)
+                dh_mod.update_heat(adapter_delta)
 
-            return result
+            return (base_result + adapter_delta) if direct_adapter_path else adapter_delta
 
         return patched_forward
 
@@ -331,6 +382,7 @@ class DualHeatCLMethod(CLMethod):
                 slow_strength=self.slow_strength,
                 slow_window=self.slow_window,
                 lateral_inhibition=self.lateral_inhibition,
+                importance=self.importance,
             )
             self._dual_modules[name] = dh_mod
 
@@ -435,6 +487,7 @@ class DualHeatCLMethod(CLMethod):
                 "slow_strength": self.slow_strength,
                 "slow_window": self.slow_window,
                 "lateral_inhibition": self.lateral_inhibition,
+                "importance": self.importance,
             },
             "module_state": module_state,
         }
@@ -456,6 +509,7 @@ class DualHeatCLMethod(CLMethod):
         self.slow_strength = float(hp.get("slow_strength", self.slow_strength))
         self.slow_window = hp.get("slow_window", self.slow_window)
         self.lateral_inhibition = bool(hp.get("lateral_inhibition", self.lateral_inhibition))
+        self.importance = str(hp.get("importance", self.importance))
 
         self._loaded_heat_state = payload.get("module_state", {})
         logger.info("DualHeat state loaded: %d modules from %s", len(self._loaded_heat_state), path)
@@ -469,6 +523,7 @@ class DualHeatCLMethod(CLMethod):
             "slow_strength": float(self.slow_strength),
             "slow_window": self.slow_window,
             "lateral_inhibition": bool(self.lateral_inhibition),
+            "importance": self.importance,
             "num_modules": len(self._dual_modules),
         }
 
