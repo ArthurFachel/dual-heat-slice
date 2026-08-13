@@ -15,7 +15,6 @@ from .o_lora import OLoRAMethod
 from .vanilla import VanillaCLMethod
 from .ewc import EWCMethod
 from .replay import ReplayMethod
-from .full_finetune import FullFineTuneMethod
 
 
 REGISTRY: Dict[str, Type[CLMethod]] = {
@@ -23,7 +22,6 @@ REGISTRY: Dict[str, Type[CLMethod]] = {
     "o_lora": OLoRAMethod,
     "dual_heat": DualHeatCLMethod,
     "dual_heat_full": DualHeatFullCLMethod,
-    "full_finetune": FullFineTuneMethod,
     "activation_protection": DualHeatCLMethod,
     "sensitivity_protection": DualHeatCLMethod,
     "lateral_inhibition": DualHeatCLMethod,
@@ -38,19 +36,26 @@ def build_cl_method(name: str, **kwargs: Any) -> CLMethod:
     forwarded to any method without per-method dispatch in callers."""
     key = (name or "vanilla").lower()
     if key == "activation_protection":
-        kwargs.setdefault("importance", "activation")
-        kwargs.setdefault("lateral_inhibition", False)
+        kwargs["importance"] = "activation"
+        kwargs["lateral_inhibition"] = False
     elif key == "sensitivity_protection":
-        kwargs.setdefault("importance", "sensitivity")
-        kwargs.setdefault("lateral_inhibition", False)
+        kwargs["importance"] = "sensitivity"
+        kwargs["lateral_inhibition"] = False
     elif key == "lateral_inhibition":
-        kwargs.setdefault("slow_strength", 0.0)
-        kwargs.setdefault("lateral_inhibition", True)
-    if key not in REGISTRY:
+        kwargs["slow_strength"] = 0.0
+        kwargs["lateral_inhibition"] = True
+    if key == "full_finetune":
+        # Backward-compatible direct factory access for the separate full
+        # pipeline, without advertising it to the LoRA orchestrator registry.
+        from .full_finetune import FullFineTuneMethod
+
+        cls = FullFineTuneMethod
+    elif key in REGISTRY:
+        cls = REGISTRY[key]
+    else:
         raise ValueError(
             f"Unknown CL method: {name!r}. Available: {sorted(REGISTRY.keys())}"
         )
-    cls = REGISTRY[key]
     accepted = _accepted_kwargs(cls)
     filtered = {k: v for k, v in kwargs.items() if k in accepted}
     instance = cls(**filtered)

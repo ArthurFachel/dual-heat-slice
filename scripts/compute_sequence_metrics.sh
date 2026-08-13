@@ -25,7 +25,10 @@ if [[ ! -d "${RUNS_ROOT}" ]]; then
     exit 1
 fi
 
-mapfile -t RUN_DIRS < <(find "${RUNS_ROOT}" -mindepth 1 -maxdepth 1 -type d | sort)
+mapfile -t RUN_DIRS < <(
+    find "${RUNS_ROOT}" -type f -path '*/stages/stage_*/stage_record.json' -printf '%h\n' \
+        | sed 's#/stages/stage_[^/]*$##' | sort -u
+)
 if [[ "${#RUN_DIRS[@]}" -eq 0 ]]; then
     echo "No run directories found under: ${RUNS_ROOT}"
     exit 1
@@ -43,11 +46,7 @@ cd "${REPO_ROOT}"
 failures=0
 skipped=0
 for run_dir in "${RUN_DIRS[@]}"; do
-    if ! ls "${run_dir}"/stages/stage_*/stage_record.json >/dev/null 2>&1; then
-        echo "[SKIP] ${run_dir}  (no stages/stage_*/stage_record.json)"
-        skipped=$((skipped + 1))
-        continue
-    fi
+
     echo "------------------------------------------------------------"
     echo "[RUN ] ${run_dir}"
     if ! "${PYTHON_BIN}" -m cl_lora.eval_standalone summary --run-dir "${run_dir}"; then

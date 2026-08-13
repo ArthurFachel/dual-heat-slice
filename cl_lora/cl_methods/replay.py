@@ -11,6 +11,7 @@ class ReplayMethod(CLMethod):
         self.replay_size = int(replay_size)
         self.seed = int(seed)
         self.buffer = []
+        self.num_seen = 0
 
     def mix_examples(self, current, previous_datasets):
         old = [item for dataset in previous_datasets for item in dataset]
@@ -28,20 +29,19 @@ class ReplayMethod(CLMethod):
     def post_train(self, lora_model, *, tokenizer, train_dataset, device, stage_idx, task_name):
         rows = list(train_dataset) if train_dataset is not None else []
         rng = random.Random(self.seed + stage_idx)
-        seen = len(self.buffer)
         for row in rows:
-            seen += 1
+            self.num_seen += 1
             if len(self.buffer) < self.replay_size:
                 self.buffer.append(row)
             else:
-                index = rng.randrange(seen)
+                index = rng.randrange(self.num_seen)
                 if index < self.replay_size:
                     self.buffer[index] = row
 
     def save(self, state_dir):
         os.makedirs(state_dir, exist_ok=True)
         import torch
-        torch.save({"replay_size": self.replay_size, "seed": self.seed, "buffer": self.buffer}, os.path.join(state_dir, "replay_state.pt"))
+        torch.save({"replay_size": self.replay_size, "seed": self.seed, "buffer": self.buffer, "num_seen": self.num_seen}, os.path.join(state_dir, "replay_state.pt"))
 
     def load(self, state_dir):
         path = os.path.join(state_dir, "replay_state.pt")
@@ -51,6 +51,7 @@ class ReplayMethod(CLMethod):
             self.replay_size = int(payload.get("replay_size", self.replay_size))
             self.seed = int(payload.get("seed", self.seed))
             self.buffer = payload.get("buffer", [])
+            self.num_seen = int(payload.get("num_seen", len(self.buffer)))
 
     def metadata(self):
         return {"name": self.name, "replay_size": self.replay_size, "buffer_size": len(self.buffer)}

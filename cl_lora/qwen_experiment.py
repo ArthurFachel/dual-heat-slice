@@ -42,7 +42,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
+
     Trainer,
     TrainingArguments,
 )
@@ -53,11 +53,13 @@ try:
     from .cl_methods import build_cl_method
     from .repro import set_global_seed
     from .train import _CLAuxLossTrainer
+    from .load_dataset import CompletionOnlyDataCollator
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from cl_lora.cl_methods import build_cl_method
     from cl_lora.repro import set_global_seed
     from cl_lora.train import _CLAuxLossTrainer
+    from cl_lora.load_dataset import CompletionOnlyDataCollator
 
 from .qwen_tasks import QWEN_CL_TASKS, QwenTask, build_qwen_dataset, make_prompt
 
@@ -82,17 +84,15 @@ def load_qwen_model(
     """
     if torch_dtype is None:
         import torch.cuda as cu
-        if cu.is_available():
-            cc = cu.get_device_capability(0)
-            major = cc[0]
-        else:
-            major = 99
-        if major < 7:
-            torch_dtype = torch.float16
-            print(f"[load_qwen_model] GPU CC={major}.x → using float16")
-        else:
+        if not cu.is_available():
+            torch_dtype = torch.float32
+            print("[load_qwen_model] CPU -> using float32")
+        elif cu.is_bf16_supported():
             torch_dtype = torch.bfloat16
-            print(f"[load_qwen_model] GPU CC={major}.x → using bfloat16")
+            print("[load_qwen_model] native bf16 supported -> using bfloat16")
+        else:
+            torch_dtype = torch.float16
+            print("[load_qwen_model] native bf16 unavailable -> using float16")
 
     kwargs = dict(
         torch_dtype=torch_dtype,
@@ -117,6 +117,14 @@ def load_qwen_tokenizer(model_name: str = QWEN_MODEL):
     return tokenizer
 
 
+def _training_precision() -> dict[str, bool]:
+    """Resolve Trainer precision without assuming CC 7.x supports bf16."""
+    if not torch.cuda.is_available():
+        return {"bf16": False, "fp16": False, "use_cpu": True}
+    use_bf16 = bool(torch.cuda.is_bf16_supported())
+    return {"bf16": use_bf16, "fp16": not use_bf16, "use_cpu": False}
+
+
 # ── LoRA setup ────────────────────────────────────────────────────────────
 
 def build_lora_config(r: int = 16, lora_alpha: int = 8):
@@ -131,12 +139,36 @@ def build_lora_config(r: int = 16, lora_alpha: int = 8):
     )
 
 
+def _prepare_stage_model(model, lora_config, method_name: str):
+    """Keep EWC in one persistent LoRA coordinate system across tasks."""
+    if method_name == "full_finetune":
+        return model
+    if method_name == "ewc" and hasattr(model, "peft_config"):
+        return model
+    return get_peft_model(model, lora_config)
+
+
 # ── Tokenization ──────────────────────────────────────────────────────────
 
 def tokenize_dataset(dataset: HFDataset, tokenizer, max_length: int = 128):
+    def _tokenize(ex):
+        prompt_ids = list(tokenizer(ex["prompt"], add_special_tokens=False)["input_ids"])
+        completion_ids = list(tokenizer(ex["target"], add_special_tokens=False)["input_ids"])
+        if not completion_ids:
+            raise ValueError("completion tokenization produced no supervised tokens")
+        completion_ids = completion_ids[:max_length]
+        prompt_budget = max(0, max_length - len(completion_ids))
+        prompt_ids = prompt_ids[-prompt_budget:] if prompt_budget else []
+        input_ids = prompt_ids + completion_ids
+        return {
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "prompt_length": len(prompt_ids),
+        }
+
     return dataset.map(
-        lambda ex: tokenizer(ex["text"], truncation=True, max_length=max_length),
-        remove_columns=[c for c in dataset.column_names if c != "target"],
+        _tokenize,
+        remove_columns=dataset.column_names,
     )
 
 
@@ -253,8 +285,7 @@ def train_one_task(
     train_tok = tokenize_dataset(train_dataset, tokenizer, max_length=max_seq_length)
     eval_tok = tokenize_dataset(eval_dataset, tokenizer, max_length=max_seq_length)
 
-    # Full fine-tuning is an explicit baseline; all other methods use LoRA.
-    peft_model = model if cl_method.name == "full_finetune" else get_peft_model(model, lora_config)
+    peft_model = _prepare_stage_model(model, lora_config, cl_method.name)
     active_adapter = "default"
 
     # CL method pre-training hook
@@ -264,15 +295,7 @@ def train_one_task(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Training args — use fp16 on Pascal (CC < 7.0), bf16 on Volta+
-    import torch.cuda as cu
-    if cu.is_available():
-        gpu_major = cu.get_device_capability(0)[0]
-        use_fp16 = gpu_major < 7
-        use_cpu = False
-    else:
-        use_fp16 = False
-        use_cpu = True
+    precision = _training_precision()
 
     training_args = TrainingArguments(
         output_dir=str(output_path),
@@ -285,16 +308,16 @@ def train_one_task(
         warmup_ratio=0.01,
         eval_strategy="no",
         save_strategy="no",
-        bf16=not use_fp16 and not use_cpu,
-        fp16=use_fp16,
-        use_cpu=use_cpu,
+        bf16=precision["bf16"],
+        fp16=precision["fp16"],
+        use_cpu=precision["use_cpu"],
         report_to="none",
-        remove_unused_columns=True,
+        remove_unused_columns=False,
         seed=seed,
         dataloader_num_workers=0,
     )
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = CompletionOnlyDataCollator(tokenizer)
 
     trainer = _CLAuxLossTrainer(
         model=peft_model,
@@ -321,8 +344,14 @@ def train_one_task(
         task_name=task.name,
     )
 
+    # Keep EWC's adapter coordinates stable between tasks. Other LoRA methods
+    # retain the original merge-per-stage protocol.
     merge_fn = getattr(peft_model, "merge_and_unload", None)
-    merged_model = merge_fn() if callable(merge_fn) else peft_model
+    merged_model = (
+        peft_model
+        if cl_method.name == "ewc"
+        else merge_fn() if callable(merge_fn) else peft_model
+    )
 
     return merged_model
 
@@ -548,7 +577,7 @@ def compare_all_methods(
         print(f"\n\n{'#'*60}")
         print(f"# Running: {cfg['label']}")
         print(f"{'#'*60}")
-        kwargs = cfg["kwargs"]
+        method_kwargs = {**kwargs, **cfg["kwargs"]}
         metrics = run_experiment(
             model_name=model_name,
             method=cfg["method"],
@@ -560,7 +589,7 @@ def compare_all_methods(
             gradient_accumulation_steps=gradient_accumulation_steps,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
-            **kwargs,
+            **method_kwargs,
         )
         results.append({"label": cfg["label"], **metrics})
 

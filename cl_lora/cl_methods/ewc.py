@@ -15,6 +15,8 @@ class EWCMethod(CLMethod):
         self._anchors = []
         self._active_anchors = []
         self._current_fisher: Dict[str, torch.Tensor] = {}
+        self._fisher_counts: Dict[str, int] = {}
+        self._fisher_samples = 0
         self._fisher_handles = []
 
     def pre_train(self, lora_model, *, stage_idx, retain_tasks):
@@ -22,6 +24,8 @@ class EWCMethod(CLMethod):
             handle.remove()
         self._fisher_handles = []
         self._current_fisher = {}
+        self._fisher_counts = {}
+        self._fisher_samples = 0
         device = next(lora_model.parameters()).device
         self._active_anchors = [
             (
@@ -38,12 +42,15 @@ class EWCMethod(CLMethod):
             if not parameter.requires_grad:
                 continue
             self._current_fisher[name] = torch.zeros_like(parameter, device=parameter.device, dtype=torch.float32)
+            self._fisher_counts[name] = 0
             self._fisher_handles.append(parameter.register_hook(self._make_fisher_hook(name)))
 
     def _make_fisher_hook(self, name: str):
         def hook(grad):
             if name in self._current_fisher:
                 self._current_fisher[name].add_(grad.detach().float().pow(2))
+                self._fisher_counts[name] += 1
+                self._fisher_samples = max(self._fisher_counts.values(), default=0)
             return grad
         return hook
 
@@ -79,8 +86,15 @@ class EWCMethod(CLMethod):
             if current is None:
                 current = torch.ones_like(current_snapshots[name])
             current = current.detach().cpu().float()
+            count = max(self._fisher_counts.get(name, 0), 1)
+            current = current / float(count)
+            previous = self._importance.get(name)
+            if previous is not None:
+                current = current + previous.detach().cpu().float()
             current_importance[name] = current
-        self._anchors.append((current_snapshots, current_importance))
+        # Online consolidation keeps one anchor in the current parameter
+        # coordinates instead of accumulating references to recreated adapters.
+        self._anchors = [(current_snapshots, current_importance)]
         self._snapshots = current_snapshots
         self._importance = current_importance
         self._active_anchors = []

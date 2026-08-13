@@ -38,12 +38,13 @@ class TinyModel:
         return torch.tensor([[1, 2, 7] for _ in range(batch)])
 
 
-def test_forgetting_averages_only_paired_task_differences():
+def test_forgetting_rejects_unpaired_task_differences():
     stages = [
         {"seen_tasks": {"A": {"score": 0.8}}},
         {"seen_tasks": {"B": {"score": 0.9}}},
     ]
-    assert compute_cl_metrics(stages, ["A", "B"])["metrics"]["Forget"] == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="missing required score cells"):
+        compute_cl_metrics(stages, ["A", "B"])
 
 
 def test_superni_formatter_preserves_all_references():

@@ -238,21 +238,47 @@ def _cache_path(cache_dir: str, task_name: str) -> str:
     return os.path.join(cache_dir, f"grad_{safe}.pt")
 
 
-def _save_grad_cache(task_name: str, grads: Dict[str, Any], cache_dir: str) -> None:
-    """Save gradient dict to disk in fp16 (halves disk/read cost vs fp32)."""
+def _cache_identity(**values: Any) -> Dict[str, Any]:
+    """Return the stable, JSON-safe identity recorded in cache manifests."""
+    return {key: values[key] for key in sorted(values)}
+
+
+def _atomic_torch_save(payload: Any, path: str) -> None:
     import os
+    import tempfile
     import torch
+    fd, tmp = tempfile.mkstemp(prefix=".cache-", suffix=".tmp", dir=os.path.dirname(path))
+    os.close(fd)
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _save_grad_cache(task_name: str, grads: Dict[str, Any], cache_dir: str,
+                     *, identity: Dict[str, Any]) -> None:
+    """Atomically save fp16 gradients with a complete identity manifest."""
+    import os
     os.makedirs(cache_dir, exist_ok=True)
     path = _cache_path(cache_dir, task_name)
-    torch.save({k: v.half().cpu() for k, v in grads.items()}, path)
+    payload = {"cache_version": 1, "identity": identity,
+               "grads": {k: v.half().cpu() for k, v in grads.items()}}
+    _atomic_torch_save(payload, path)
     logger.info("  cached → %s", path)
 
 
-def _load_grad_cache(task_name: str, cache_dir: str) -> Dict[str, Any]:
-    """Load a cached gradient dict back onto GPU as fp16."""
+def _load_grad_cache(task_name: str, cache_dir: str, *,
+                     identity: Dict[str, Any], map_location: Any = "cpu") -> Dict[str, Any]:
+    """Load gradients only when their complete identity matches."""
     import torch
     path = _cache_path(cache_dir, task_name)
-    return torch.load(path, map_location="cuda", weights_only=True)
+    payload = torch.load(path, map_location=map_location, weights_only=True)
+    if not isinstance(payload, dict) or payload.get("cache_version") != 1 \
+            or payload.get("identity") != identity or "grads" not in payload:
+        raise ValueError(f"stale or incomplete gradient cache: {path}")
+    return payload["grads"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,16 +347,25 @@ def _build_global_sketch(
 
 
 def _save_sketch_cache(task_name: str, sketch: Any, global_norm: float,
-                        module_norms: Dict[str, float], sketch_dir: str) -> None:
-    import os, torch
+                        module_norms: Dict[str, float], sketch_dir: str, *,
+                        identity: Dict[str, Any]) -> None:
+    import os
     os.makedirs(sketch_dir, exist_ok=True)
-    torch.save({"sketch": sketch, "global_norm": global_norm,
-                "module_norms": module_norms}, _sketch_path(sketch_dir, task_name))
+    _atomic_torch_save({"cache_version": 1, "identity": identity,
+                        "sketch": sketch, "global_norm": global_norm,
+                        "module_norms": module_norms},
+                       _sketch_path(sketch_dir, task_name))
 
 
-def _load_sketch_cache(task_name: str, sketch_dir: str) -> Dict[str, Any]:
+def _load_sketch_cache(task_name: str, sketch_dir: str, *,
+                       identity: Dict[str, Any]) -> Dict[str, Any]:
     import torch
-    return torch.load(_sketch_path(sketch_dir, task_name), weights_only=True)
+    path = _sketch_path(sketch_dir, task_name)
+    payload = torch.load(path, weights_only=True)
+    if not isinstance(payload, dict) or payload.get("cache_version") != 1 \
+            or payload.get("identity") != identity:
+        raise ValueError(f"stale or incomplete sketch cache: {path}")
+    return payload
 
 
 def pair_conflict_from_sketch(
@@ -366,14 +401,30 @@ def compress_grad_cache(cache_dir: str, sketch_dir: str,
         # Strip "grad_" prefix and ".pt" suffix to get task name.
         task_name = os.path.basename(path)[len("grad_"):-len(".pt")]
         task_names.append(task_name)
-        if os.path.exists(_sketch_path(sketch_dir, task_name)):
-            logger.info("  [already compressed] %s", task_name)
-            continue
-        grads = torch.load(path, map_location="cuda", weights_only=True)
+        source_stat = os.stat(path)
+        sketch_identity = {
+            "source_size": source_stat.st_size,
+            "source_mtime_ns": source_stat.st_mtime_ns,
+            "k": k,
+            "sketch_seed": seed,
+        }
+        existing = _sketch_path(sketch_dir, task_name)
+        if os.path.exists(existing):
+            try:
+                _load_sketch_cache(task_name, sketch_dir, identity=sketch_identity)
+                logger.info("  [already compressed] %s", task_name)
+                continue
+            except ValueError:
+                logger.warning("  replacing stale sketch for %s", task_name)
+        payload = torch.load(path, map_location="cuda", weights_only=True)
+        if not isinstance(payload, dict) or payload.get("cache_version") != 1 or "identity" not in payload:
+            raise ValueError(f"stale legacy gradient cache cannot be compressed: {path}")
+        grads = payload["grads"]
         sketch, global_norm, module_norms = _build_global_sketch(grads, k=k, seed=seed)
         del grads
         torch.cuda.empty_cache()
-        _save_sketch_cache(task_name, sketch, global_norm, module_norms, sketch_dir)
+        _save_sketch_cache(task_name, sketch, global_norm, module_norms, sketch_dir,
+                           identity=sketch_identity)
         logger.info("  compressed → %s", _sketch_path(sketch_dir, task_name))
     return task_names
 
@@ -645,12 +696,28 @@ def search_opposite_pairs(
 
     model_name = model_name or MODEL_NAME
 
-    # Determine which tasks still need gradient computation.
+    def _grad_identity(task: Any) -> Dict[str, Any]:
+        return _cache_identity(
+            model=model_name,
+            dataset=getattr(task, "name", str(task)),
+            dataset_revision=getattr(task, "revision", None),
+            seed=seed,
+            max_steps=max_steps,
+            batch_size=batch_size,
+            max_seq_length=max_seq_length,
+        )
+
+    # Determine which tasks still need gradient computation. A file is reusable
+    # only when its manifest matches every configuration input.
     def _needs_compute(task: Any) -> bool:
         if cache_dir is None:
             return True
         name = getattr(task, "name", str(task))
-        return not os.path.exists(_cache_path(cache_dir, name))
+        try:
+            _load_grad_cache(name, cache_dir, identity=_grad_identity(task))
+            return False
+        except (FileNotFoundError, ValueError, OSError, RuntimeError):
+            return True
 
     tasks_to_compute = [t for t in tasks if _needs_compute(t)]
 
@@ -674,7 +741,7 @@ def search_opposite_pairs(
 
         for task in tasks:
             name = getattr(task, "name", str(task))
-            if cache_dir and os.path.exists(_cache_path(cache_dir, name)):
+            if cache_dir and not _needs_compute(task):
                 logger.info("  [cached] %s", name)
                 task_names.append(name)
                 continue
@@ -686,7 +753,7 @@ def search_opposite_pairs(
                     max_seq_length=max_seq_length, seed=seed,
                 )
                 if cache_dir:
-                    _save_grad_cache(name, grads, cache_dir)
+                    _save_grad_cache(name, grads, cache_dir, identity=_grad_identity(task))
                     del grads
                     torch.cuda.empty_cache()
                 else:
@@ -713,8 +780,11 @@ def search_opposite_pairs(
     for i, j in tqdm(pair_list, desc="scoring pairs", unit="pair"):
         a, b = task_names[i], task_names[j]
         if cache_dir:
-            ga = _load_grad_cache(a, cache_dir)
-            gb = _load_grad_cache(b, cache_dir)
+            task_by_name = {getattr(t, "name", str(t)): t for t in tasks}
+            ga = _load_grad_cache(a, cache_dir, identity=_grad_identity(task_by_name[a]),
+                                  map_location="cuda")
+            gb = _load_grad_cache(b, cache_dir, identity=_grad_identity(task_by_name[b]),
+                                  map_location="cuda")
             s = pair_conflict(ga, gb)
             del ga, gb
             torch.cuda.empty_cache()
@@ -914,7 +984,26 @@ def main() -> None:
                         len(task_names), len(task_names) * (len(task_names) - 1) // 2,
                         args.sketch_dir)
 
-            sketches = {n: _load_sketch_cache(n, args.sketch_dir) for n in task_names}
+            expected_by_name = {}
+            resolved_model = args.model_name
+            if resolved_model is None:
+                from .train import MODEL_NAME
+                resolved_model = MODEL_NAME
+            for task in pool:
+                name = getattr(task, "name", str(task))
+                safe_name = name.replace("/", "_").replace(" ", "_")
+                expected_by_name[safe_name] = _cache_identity(
+                    model=resolved_model, dataset=name,
+                    dataset_revision=getattr(task, "revision", None), seed=args.seed,
+                    max_steps=args.max_steps, batch_size=args.batch_size,
+                    max_seq_length=args.max_seq_length, k=_SKETCH_K,
+                    sketch_seed=args.seed,
+                )
+            sketches = {
+                n: _load_sketch_cache(n, args.sketch_dir, identity=expected_by_name[n])
+                for n in task_names if n in expected_by_name
+            }
+            task_names = list(sketches)
             pair_list = list(combinations(range(len(task_names)), 2))
             pairs = []
             for i, j in tqdm(pair_list, desc="scoring pairs (sketch)", unit="pair"):

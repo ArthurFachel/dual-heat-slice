@@ -302,42 +302,23 @@ class DualHeatCLMethod(CLMethod):
           4. Track heat magnitudes
         """
         def patched_forward(x, *args, **kwargs):
-            # Delegate PEFT details (ModuleDicts, casts, variants, mixed adapters,
-            # merged/disabled states) to the supported native implementation.
-            # Recompute the trainable adapter branch directly. This avoids
-            # calling the frozen base layer twice and leaves the base path
-            # unchanged in the returned representation.
-            adapter_name = self._active_adapter
+            # PEFT owns dtype casting, adapter variants, and mixed-adapter routing.
+            result = original_forward(x, *args, **kwargs)
+
+            # Disabled or merged adapters have no independently instrumentable
+            # trainable delta. Preserve the native result and fail closed.
+            if getattr(mod, "disable_adapters", False) or getattr(mod, "merged", False):
+                return result
             base_layer = getattr(mod, "base_layer", None)
-            lora_a = getattr(mod, "lora_A", {})
-            lora_b = getattr(mod, "lora_B", {})
-            dropout = getattr(mod, "lora_dropout", {})
-            scaling = getattr(mod, "scaling", {})
-            direct_adapter_path = (
-                callable(base_layer)
-                and adapter_name in lora_a
-                and adapter_name in lora_b
-                and adapter_name in dropout
-                and adapter_name in scaling
-            )
-            if direct_adapter_path:
-                dropped = dropout[adapter_name](x)
-                adapter_delta = lora_b[adapter_name](lora_a[adapter_name](dropped)) * scaling[adapter_name]
-                try:
-                    base_result = base_layer(x, *args, **kwargs)
-                except TypeError:
-                    base_result = base_layer(x)
-            else:
-                # Keep a native-PEFT fallback for unsupported module variants.
-                result = original_forward(x, *args, **kwargs)
-                base_result = result
-                adapter_delta = result
-
-            if dh_mod.importance == "sensitivity" and adapter_delta.requires_grad:
-                adapter_delta.register_hook(dh_mod.sensitivity_hook(adapter_delta.detach()))
-
-            if dh_mod.slow_strength > 0.0 and adapter_delta.requires_grad:
-                adapter_delta.register_hook(self._make_ewc_hook_on_output(name))
+            if not callable(base_layer):
+                return result
+            try:
+                base_result = base_layer(x, *args, **kwargs)
+            except TypeError:
+                # PEFT-only kwargs (for example adapter_names) are not accepted
+                # by ordinary base layers.
+                base_result = base_layer(x)
+            adapter_delta = result - base_result
 
             # ── Lateral inhibition ──────────────────────────────────────
             if dh_mod.lateral_inhibition and dh_mod.fast_strength > 0.0 \
@@ -349,11 +330,16 @@ class DualHeatCLMethod(CLMethod):
                 scale = (1.0 + dh_mod.fast_strength * mean_others).to(adapter_delta.dtype)
                 adapter_delta = adapter_delta / scale
 
-            # ── Heat tracking ───────────────────────────────────────────
+            # Sensitivity observes the same post-inhibition representation that
+            # is returned and subsequently protected by the EWC gradient hook.
+            if dh_mod.importance == "sensitivity" and adapter_delta.requires_grad:
+                adapter_delta.register_hook(dh_mod.sensitivity_hook(adapter_delta.detach()))
+            if dh_mod.slow_strength > 0.0 and adapter_delta.requires_grad:
+                adapter_delta.register_hook(self._make_ewc_hook_on_output(name))
+
             if mod.training:
                 dh_mod.update_heat(adapter_delta)
-
-            return (base_result + adapter_delta) if direct_adapter_path else adapter_delta
+            return base_result + adapter_delta
 
         return patched_forward
 

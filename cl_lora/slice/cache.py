@@ -4,6 +4,8 @@ import csv
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -49,20 +51,39 @@ def load_slice_cache(
         logger.debug("Slice cache root missing: %s", root_dir)
         return None
 
+    manifest_path = os.path.join(root_dir, "manifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Rejecting incomplete slice cache without valid manifest: %s", root_dir)
+        return None
+    if manifest.get("version") != 1 or manifest.get("complete") is not True:
+        logger.warning("Rejecting incomplete or incompatible slice cache: %s", root_dir)
+        return None
+
     inits_dir = os.path.join(root_dir, "inits")
     if not os.path.isdir(inits_dir):
         return None
 
+    expected_modules = manifest.get("modules")
+    if not isinstance(expected_modules, list) or not expected_modules:
+        return None
     inits: Dict[str, Dict[str, torch.Tensor]] = {}
-    for fname in os.listdir(inits_dir):
-        if not fname.endswith(".pt"):
-            continue
-        path = os.path.join(inits_dir, fname)
-        key = fname[:-3]
+    for key in expected_modules:
+        path = os.path.join(inits_dir, f"{key}.pt")
+        if not os.path.isfile(path):
+            logger.warning("Rejecting partial slice cache missing %s", path)
+            return None
         map_loc = device if device is not None else "cpu"
-        payload = torch.load(path, map_location=map_loc, weights_only=True)
-        if isinstance(payload, dict) and "A" in payload and "B" in payload:
-            inits[key] = {"A": payload["A"], "B": payload["B"]}
+        try:
+            payload = torch.load(path, map_location=map_loc, weights_only=True)
+        except (OSError, RuntimeError, EOFError):
+            logger.warning("Rejecting unreadable slice cache tensor: %s", path)
+            return None
+        if not isinstance(payload, dict) or "A" not in payload or "B" not in payload:
+            return None
+        inits[key] = {"A": payload["A"], "B": payload["B"]}
 
     if not inits:
         logger.debug("Slice cache at %s contains no inits", root_dir)
@@ -78,19 +99,41 @@ def save_slice_cache(
     entry: SliceCacheEntry,
     meta: Optional[Dict[str, Any]] = None,
 ) -> None:
-    root_dir = os.path.join(cache_dir, cache_key)
-    inits_dir = os.path.join(root_dir, "inits")
-    os.makedirs(inits_dir, exist_ok=True)
+    final_dir = os.path.join(cache_dir, cache_key)
+    os.makedirs(cache_dir, exist_ok=True)
+    staging_dir = tempfile.mkdtemp(prefix=f".{cache_key}.", dir=cache_dir)
+    try:
+        inits_dir = os.path.join(staging_dir, "inits")
+        os.makedirs(inits_dir)
+        modules = sorted(entry.inits)
+        for name in modules:
+            ab = entry.inits[name]
+            payload = {"A": ab["A"], "B": ab["B"]}
+            torch.save(payload, os.path.join(inits_dir, f"{name}.pt"))
 
-    for name, ab in entry.inits.items():
-        payload = {"A": ab["A"], "B": ab["B"]}
-        torch.save(payload, os.path.join(inits_dir, f"{name}.pt"))
+        if meta is not None:
+            with open(os.path.join(staging_dir, "meta.json"), "w", encoding="utf-8") as f:
+                json.dump(meta, f, sort_keys=True, indent=2)
+        with open(os.path.join(staging_dir, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "complete": True, "modules": modules}, f,
+                      sort_keys=True, indent=2)
 
-    if meta is not None:
-        meta_path = os.path.join(root_dir, "meta.json")
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(meta, f, sort_keys=True, indent=2)
-    logger.info("Saved slice cache to %s with %d modules", root_dir, len(entry.inits))
+        old_dir = None
+        if os.path.exists(final_dir):
+            old_dir = final_dir + ".old"
+            shutil.rmtree(old_dir, ignore_errors=True)
+            os.replace(final_dir, old_dir)
+        try:
+            os.replace(staging_dir, final_dir)
+        except Exception:
+            if old_dir and os.path.exists(old_dir):
+                os.replace(old_dir, final_dir)
+            raise
+        if old_dir:
+            shutil.rmtree(old_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    logger.info("Saved slice cache to %s with %d modules", final_dir, len(entry.inits))
 
 
 def save_ab_stats_csv(

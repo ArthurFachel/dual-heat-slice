@@ -207,6 +207,10 @@ def run_sequence(
         "gradient_accumulation_steps": int(gradient_accumulation_steps),
         "max_seq_length": int(max_seq_length),
         "warmup_ratio": float(warmup_ratio),
+        "keep_all_checkpoints": bool(keep_all_checkpoints),
+        "general_eval_strategy": general_eval_strategy,
+        "seen_eval_strategy": seen_eval_strategy,
+        "train_only": bool(train_only),
     }
 
     run_cfg_payload: Dict[str, Any] = {
@@ -248,7 +252,11 @@ def run_sequence(
         seen_tasks = sequence.tasks[:completed]
 
         if completed >= len(sequence.tasks):
-            summary = compute_cl_metrics(stage_records=stage_records, task_order=task_order)
+            summary = None if train_only or quick_eval else compute_cl_metrics(
+                stage_records=stage_records,
+                task_order=task_order,
+                coverage_mode=seen_eval_strategy,
+            )
             final_payload = {
                 "sequence": sequence_name,
                 "description": sequence.description,
@@ -257,8 +265,9 @@ def run_sequence(
                 "stage_records": stage_records,
                 "summary": summary,
             }
-            _write_json(run_output_dir / "results_matrix.json", summary["results_matrix"])
-            _write_json(run_output_dir / "metrics.json", summary["metrics"])
+            if summary is not None:
+                _write_json(run_output_dir / "results_matrix.json", summary["results_matrix"])
+                _write_json(run_output_dir / "metrics.json", summary["metrics"])
             _write_json(run_output_dir / "run_summary.json", final_payload)
             return final_payload
 
@@ -345,23 +354,26 @@ def run_sequence(
         elif general_eval_strategy == "final_only":
             run_general = is_final_stage
 
-        # Evaluate (seen tasks + general tasks, handled internally by evaluate_all)
-        print(f"  Evaluating on {len(eval_seen)} seen tasks...")
-        evaluation = evaluate_all(
-            model,
-            tokenizer,
-            eval_seen,
-            output_dir=str(stage_eval_dir),
-            general_eval_task_keys=general_eval_keys,
-            eval_size=eval_size,
-            task_eval_samples=task_eval_samples,
-            task_eval_max_new_tokens=task_eval_max_new_tokens,
-            quick_eval=quick_eval,
-            skip_general_eval=not run_general,
-            seed=seed,
-        )
+        if train_only:
+            print("  Skipping evaluation (--train-only mode).")
+            evaluation = {"seen_tasks": {}, "general": {"mode": "train_only"}}
+        else:
+            print(f"  Evaluating on {len(eval_seen)} seen tasks...")
+            evaluation = evaluate_all(
+                model,
+                tokenizer,
+                eval_seen,
+                output_dir=str(stage_eval_dir),
+                general_eval_task_keys=general_eval_keys,
+                eval_size=eval_size,
+                task_eval_samples=task_eval_samples,
+                task_eval_max_new_tokens=task_eval_max_new_tokens,
+                quick_eval=quick_eval,
+                skip_general_eval=not run_general,
+                seed=seed,
+            )
         seen_scores = evaluation.get("seen_tasks", {})
-        general_scores = evaluation.get("general", {"gp": {}, "ip": {}, "gp_mean": None, "ip_mean": None, "mode": "skipped"})
+        general_scores = evaluation.get("general", {"mode": "skipped"})
         print(f"  Seen-task scores: {seen_scores}")
         if general_scores.get("gp") or general_scores.get("ip"):
             print(f"  General-task scores: GP={general_scores.get('gp_mean', 'N/A'):.4f} IP={general_scores.get('ip_mean', 'N/A'):.4f}")
@@ -372,6 +384,8 @@ def run_sequence(
             "train_report": train_report,
             "seen_tasks": seen_scores,
             "general": general_scores,
+            "evaluation_mode": evaluation.get("evaluation_mode", "train_only" if train_only else "canonical_generation"),
+            "metrics_eligible": evaluation.get("metrics_eligible", not train_only),
         }
         stage_records.append(stage_record)
 
@@ -390,8 +404,16 @@ def run_sequence(
         tokenizer.save_pretrained(str(model_checkpoint_dir))
         print(f"  Model checkpoint saved: {model_checkpoint_dir}")
 
-    # Compute final metrics
-    summary = compute_cl_metrics(stage_records=stage_records, task_order=task_order)
+        if not keep_all_checkpoints and idx > 1:
+            previous = checkpoint_root / f"stage_{idx - 1:02d}_{_safe_name(sequence.tasks[idx - 2].name)}"
+            shutil.rmtree(previous, ignore_errors=True)
+
+    # Quick/perplexity and train-only records are intentionally non-canonical.
+    summary = None if train_only or quick_eval else compute_cl_metrics(
+        stage_records=stage_records,
+        task_order=task_order,
+        coverage_mode=seen_eval_strategy,
+    )
 
     final_payload = {
         "sequence": sequence_name,
@@ -402,14 +424,17 @@ def run_sequence(
         "summary": summary,
     }
 
-    _write_json(run_output_dir / "results_matrix.json", summary["results_matrix"])
-    _write_json(run_output_dir / "metrics.json", summary["metrics"])
+    if summary is not None:
+        _write_json(run_output_dir / "results_matrix.json", summary["results_matrix"])
+        _write_json(run_output_dir / "metrics.json", summary["metrics"])
     _write_json(run_output_dir / "run_summary.json", final_payload)
 
-    # Cleanup partial state
-    if partial_path.exists():
-        partial_path.unlink()
+    if save_final_model:
+        final_model_dir = run_output_dir / "final_model"
+        model.save_pretrained(str(final_model_dir))
+        tokenizer.save_pretrained(str(final_model_dir))
 
+    # Cleanup partial state
     if partial_path.exists():
         partial_path.unlink()
 
@@ -421,7 +446,7 @@ def run_sequence(
     print(f"  Type: Full fine-tune (no LoRA)")
     print(f"  Tasks: {len(sequence.tasks)}")
 
-    metrics = summary.get("metrics", {})
+    metrics = summary.get("metrics", {}) if summary else {}
 
     def _fmt(val, decimals=4):
         """Format metric value — float gets decimals, str/Nones pass through."""
@@ -479,6 +504,8 @@ def main():
     parser.add_argument("--task-eval-samples", type=int, default=50)
     parser.add_argument("--task-eval-max-new-tokens", type=int, default=50)
     parser.add_argument("--quick-eval", action="store_true")
+    parser.add_argument("--train-only", action="store_true",
+                        help="Skip evaluation and emit checkpoints only")
     parser.add_argument("--general-eval-keys", nargs="*", default=[])
     parser.add_argument(
         "--general-eval-strategy",
@@ -489,6 +516,11 @@ def main():
     # Resume / output
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--save-final-model", action="store_true")
+    parser.add_argument("--keep-all-checkpoints", action="store_true",
+                        help="Keep every stage checkpoint instead of only the latest")
+    parser.add_argument("--seen-eval-strategy",
+                        choices=["full_matrix", "diagonal_final"],
+                        default="full_matrix")
     parser.add_argument("--run-dir", default="results_full",
                         help="Root output directory")
     parser.add_argument("--train-dir", default="training_output_full",
@@ -540,7 +572,10 @@ def main():
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
         max_seq_length=args.max_seq_length,
+        keep_all_checkpoints=args.keep_all_checkpoints,
         general_eval_strategy=args.general_eval_strategy,
+        seen_eval_strategy=args.seen_eval_strategy,
+        train_only=args.train_only,
         cl_method_name=args.method,
         cl_method_kwargs=cl_kwargs,
     )

@@ -209,6 +209,8 @@ def run_eval_from_manifest(
         "train_report": train_report,
         "seen_tasks": evaluation["seen_tasks"],
         "general": evaluation["general"],
+        "evaluation_mode": evaluation.get("evaluation_mode", "canonical_generation"),
+        "metrics_eligible": evaluation.get("metrics_eligible", True),
     }
 
     out_path = stage_dir / "stage_record.json"
@@ -238,6 +240,16 @@ def recompute_run_summary(run_dir: Path) -> None:
     if not stage_records:
         print("No stage_record.json files found; skipping summary.")
         return
+
+    rejected = [
+        record.get("stage") for record in stage_records
+        if record.get("metrics_eligible", True) is False
+    ]
+    if rejected:
+        raise ValueError(
+            "Cannot emit canonical CL metrics from non-canonical quick evaluation "
+            f"stages: {rejected}. Re-run generation evaluation first."
+        )
 
     summary = compute_cl_metrics(stage_records=stage_records, task_order=task_order)
     _write_json(run_dir / "results_matrix.json", summary["results_matrix"])

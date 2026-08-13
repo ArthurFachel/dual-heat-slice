@@ -49,6 +49,8 @@ def build_results_matrix(
 def compute_cl_metrics(
     stage_records: List[Dict[str, Any]],
     task_order: List[str],
+    *,
+    coverage_mode: str = "full_matrix",
 ) -> Dict[str, Any]:
     """Compute AP, FP, Forget, GP, IP from staged continual-learning results.
 
@@ -62,6 +64,18 @@ def compute_cl_metrics(
         raise ValueError("stage_records is empty.")
     if not task_order:
         raise ValueError("task_order is empty.")
+    if len(stage_records) != len(task_order):
+        raise ValueError(
+            f"incomplete stage coverage: expected {len(task_order)} stages, "
+            f"observed {len(stage_records)}."
+        )
+    actual_stages = [stage.get("stage", idx) for idx, stage in enumerate(stage_records, start=1)]
+    expected_stages = list(range(1, len(task_order) + 1))
+    if actual_stages != expected_stages:
+        raise ValueError(
+            f"stage numbers must be contiguous and ordered: expected {expected_stages}, "
+            f"observed {actual_stages}."
+        )
 
     matrix = build_results_matrix(stage_records=stage_records, task_order=task_order)
 
@@ -76,6 +90,25 @@ def compute_cl_metrics(
             diag_values.append(score)
 
     final_stage_scores = matrix[-1]["scores"]
+    if coverage_mode == "full_matrix":
+        required_cells = [
+            (row_idx, task_name)
+            for row_idx in range(len(task_order))
+            for task_name in task_order[: row_idx + 1]
+        ]
+    elif coverage_mode == "diagonal_final":
+        last = len(task_order) - 1
+        required_cells = [(idx, task) for idx, task in enumerate(task_order)]
+        required_cells.extend((last, task) for task in task_order[:-1])
+    else:
+        raise ValueError(f"unknown coverage_mode: {coverage_mode!r}")
+    missing_cells = [
+        (row_idx + 1, task_name)
+        for row_idx, task_name in required_cells
+        if matrix[row_idx]["scores"].get(task_name) is None
+    ]
+    if missing_cells:
+        raise ValueError(f"missing required score cells: {missing_cells}")
     final_values = [v for v in final_stage_scores.values() if v is not None]
 
     per_task_forgetting = {}
@@ -110,4 +143,17 @@ def compute_cl_metrics(
         "diagonal_scores": diagonal_scores,
         "final_scores": final_stage_scores,
         "per_task_forgetting": per_task_forgetting,
+        "coverage": {
+            "expected_stages": len(task_order),
+            "observed_stages": len(stage_records),
+            "score_cells_expected": len(required_cells),
+            "score_cells_observed": len(required_cells) - len(missing_cells),
+            "complete": not missing_cells,
+            "missing_score_cells": missing_cells,
+            "mode": coverage_mode,
+        },
+        "forgetting_definition": {
+            "formula": "diagonal_score - final_score",
+            "includes_final_task": True,
+        },
     }

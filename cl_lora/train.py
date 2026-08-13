@@ -105,14 +105,39 @@ def load_base_model(
 
 def _tokenize_dataset(dataset, tokenizer, max_length: int):
     def tokenize(ex):
-        encoded = tokenizer(ex["text"], truncation=True, max_length=max_length)
-        prompt = tokenizer(ex["prompt"], truncation=True, max_length=max_length)
-        encoded["prompt_length"] = min(len(prompt["input_ids"]), len(encoded["input_ids"]))
-        return encoded
+        prompt_ids = list(tokenizer(ex["prompt"], add_special_tokens=False)["input_ids"])
+        completion_ids = list(tokenizer(ex["target"], add_special_tokens=False)["input_ids"])
+        if not completion_ids:
+            raise ValueError("completion tokenization produced no supervised tokens")
+        completion_ids = completion_ids[:max_length]
+        prompt_budget = max(0, max_length - len(completion_ids))
+        prompt_ids = prompt_ids[-prompt_budget:] if prompt_budget else []
+        input_ids = prompt_ids + completion_ids
+        return {
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "prompt_length": len(prompt_ids),
+        }
     return dataset.map(
         tokenize,
         remove_columns=dataset.column_names,
     )
+
+
+def _prepare_cl_train_dataset(
+    dataset,
+    cl_method: CLMethod,
+    tokenizer,
+    max_length: int,
+    *,
+    tokenize_fn=_tokenize_dataset,
+    return_original: bool = False,
+):
+    """Apply CL replay/augmentation before tokenization."""
+    original = dataset
+    prepared = cl_method.prepare_train_dataset(dataset)
+    tokenized = tokenize_fn(prepared, tokenizer=tokenizer, max_length=max_length)
+    return (tokenized, original) if return_original else tokenized
 
 
 class _CLAuxLossTrainer(Trainer):
@@ -311,8 +336,15 @@ def train_on_task(
         (model_after_stage, training_report)
     """
     set_global_seed(seed)
+    cl_method = cl_method or VanillaCLMethod()
     train_dataset, eval_dataset = load_training_dataset(task=task, eval_size=eval_size, seed=seed)
-    train_dataset = _tokenize_dataset(train_dataset, tokenizer=tokenizer, max_length=max_seq_length)
+    train_dataset, original_train_dataset = _prepare_cl_train_dataset(
+        train_dataset,
+        cl_method,
+        tokenizer,
+        max_seq_length,
+        return_original=True,
+    )
     eval_dataset = _tokenize_dataset(eval_dataset, tokenizer=tokenizer, max_length=max_seq_length)
 
     lora_cfg = build_lora_config(r=rank, lora_alpha=lora_alpha)
@@ -391,7 +423,6 @@ def train_on_task(
     # CL-method pre-training hook (fires AFTER init_correction capture so
     # absorption replay at eval time still reflects the actual A_init/B_init
     # used to modify the base weights).
-    cl_method = cl_method or VanillaCLMethod()
     cl_method.pre_train(
         lora_model,
         stage_idx=int(stage_idx),
@@ -451,7 +482,7 @@ def train_on_task(
     cl_method.post_train(
         lora_model,
         tokenizer=tokenizer,
-        train_dataset=train_dataset,
+        train_dataset=original_train_dataset,
         device=cl_device,
         stage_idx=int(stage_idx),
         task_name=getattr(task, "name", str(task)),

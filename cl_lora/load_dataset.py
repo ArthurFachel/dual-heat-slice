@@ -27,6 +27,26 @@ _DATASET_CACHE_DIR = Path(os.environ.get(
 ))
 
 
+_DATASET_CACHE_VERSION = 1
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
 def _cached_fetch_json(url: str, timeout: int = 30) -> Any:
     """Fetch JSON from *url* with local disk caching.
 
@@ -41,19 +61,24 @@ def _cached_fetch_json(url: str, timeout: int = 30) -> Any:
     if cache_path.exists():
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                envelope = json.load(f)
+            if not isinstance(envelope, dict) or envelope.get("cache_version") != _DATASET_CACHE_VERSION \
+                    or envelope.get("url") != url or "data" not in envelope:
+                raise ValueError("stale cache metadata")
             logger.debug("Dataset cache hit: %s", cache_path)
-            return data
-        except (json.JSONDecodeError, OSError):
+            return envelope["data"]
+        except (json.JSONDecodeError, OSError, ValueError):
             logger.warning("Corrupted dataset cache entry %s — re-downloading", cache_path)
 
     response = requests.get(url, timeout=timeout)
     response.raise_for_status()
     data = response.json()
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=True)
+    _atomic_write_json(cache_path, {
+        "cache_version": _DATASET_CACHE_VERSION,
+        "url": url,
+        "data": data,
+    })
     logger.debug("Dataset cached: %s -> %s", url, cache_path)
 
     return data
@@ -83,7 +108,7 @@ TRACE_BENCHMARK_DIRS = [
     "LLM-CL-Benchmark_Reasoning",
 ]
 
-DEFAULT_TRACE_ROOT = "/mnt/C-SSD/user/data/TRACE-Benchmark"
+DEFAULT_TRACE_ROOT = os.environ.get("CL_LORA_TRACE_ROOT", "/mnt/C-SSD/user/data/TRACE-Benchmark")
 
 
 def _to_text(value: Any) -> str:

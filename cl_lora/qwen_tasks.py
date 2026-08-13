@@ -342,7 +342,9 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
       - 'target' (label only, for evaluation comparison)
     """
     rng = random.Random(seed)
-    indexes = list(range(len(task.data)))
+    # Exact duplicate examples must never be split across train/eval.
+    unique_data = list(dict.fromkeys(task.data))
+    indexes = list(range(len(unique_data)))
     rng.shuffle(indexes)
 
     split_idx = int(len(indexes) * (1.0 - eval_split))
@@ -380,7 +382,7 @@ def build_qwen_dataset(task: QwenTask, seed: int = 42, eval_split: float = 0.2,
         prompts = []
         targets = []
         for i in ids:
-            text, label = task.data[i]
+            text, label = unique_data[i]
             if tokenizer is not None:
                 full_text = _format_chat(text, label, task.domain, include_answer=True)
                 prompt_text = _format_chat(text, label, task.domain, include_answer=False)

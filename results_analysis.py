@@ -42,9 +42,9 @@ import numpy as np
 # SSH aliases as defined in ~/.ssh/config — no host/user needed here.
 REMOTES = ["user"]
 
-REMOTE_BASE        = "~/work/cl-lora/adaptors_eval"
-LOCAL_BASE         = Path("imported_results")
-LOCAL_RESULTS      = Path("/mnt/E-SSD/dev-cl-lora/cl-lora/results")
+REMOTE_BASE        = os.environ.get("CL_LORA_REMOTE_BASE", "~/work/cl-lora/adaptors_eval")
+LOCAL_BASE         = Path(os.environ.get("CL_LORA_IMPORTED_RESULTS", "imported_results"))
+LOCAL_RESULTS      = Path(os.environ.get("CL_LORA_LOCAL_RESULTS", "results"))
 PENDING_EVAL_REMOTES = ["user", "user"]   # machines running pending_eval
 PENDING_EVAL_PATH    = "~/work/cl-lora/pending_eval"
 PENDING_EVAL_LOCAL   = Path("imported_results_pending")
@@ -52,14 +52,12 @@ SYNC_FILES           = ["metrics.json", "results_matrix.json", "run_config.json"
 # stage_record.json files under stages/stage_*/ carry per-benchmark GP/IP breakdowns
 SYNC_STAGE_RECORDS   = True
 
-RANK128_RESULTS     = Path("/mnt/D-SSD/cl-lora-ramiro/results")
-B_SSD_RESULTS       = Path("/mnt/B-SSD/jmpasquali/fix-cl-lora/cl-lora/results")
-ALPHA_SWEEP_RESULTS = Path("/mnt/D-SSD/slice-neurips2026-cache/alpha_sweep")
-MOTOX_RESULTS       = Path("/mnt/E-SSD/user/all_results")
+RANK128_RESULTS     = Path(os.environ.get("CL_LORA_RANK128_RESULTS", "results_rank128"))
+B_SSD_RESULTS       = Path(os.environ.get("CL_LORA_B_RESULTS", "results_b"))
+ALPHA_SWEEP_RESULTS = Path(os.environ.get("CL_LORA_ALPHA_SWEEP_RESULTS", "alpha_sweep"))
+MOTOX_RESULTS       = Path(os.environ.get("CL_LORA_MOTOX_RESULTS", "all_results"))
 CL_BASELINES_ROOTS = [
-    Path("/mnt/E-SSD/cl-baselines/cl-lora/results/TRACE/basic_methods"),
-    Path("/mnt/E-SSD/cl-baselines/cl-lora/results/NI-Seq-G2/basic_methods"),
-    Path("/mnt/E-SSD/user/all_results/opposing_seqs_commit_42175dc/NI-Seq-G1"),
+    Path(p) for p in os.environ.get("CL_LORA_BASELINE_ROOTS", "").split(os.pathsep) if p
 ]
 
 METRICS = ["AP", "FP", "GP", "IP", "Forget"]
@@ -96,7 +94,6 @@ def open_control_master(alias: str, verbose: bool = False) -> bool:
     ctrl = _ctrl_socket(alias)
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
         "-o", f"ControlPath={ctrl}",
         "-o", "ControlMaster=yes",
         "-o", "ControlPersist=10m",
@@ -134,7 +131,6 @@ def list_finished_runs(alias: str, verbose: bool = False) -> list[tuple[str, str
     )
     cmd = [
         "ssh",
-        "-o", "StrictHostKeyChecking=no",
         "-o", f"ControlPath={ctrl}",
         "-o", "ControlMaster=no",
         *(["-v"] if verbose else []),
@@ -181,8 +177,7 @@ def rsync_run(alias: str, seq_name: str, method: str, verbose: bool = False) -> 
         ]
 
     ssh_opt = (
-        f"ssh -o StrictHostKeyChecking=no"
-        f" -o ControlPath={ctrl} -o ControlMaster=no"
+        f"ssh -o ControlPath={ctrl} -o ControlMaster=no"
         + (" -v" if verbose else "")
     )
     cmd = [
@@ -231,8 +226,7 @@ def _sync_pending_eval(alias: str, verbose: bool = False) -> None:
     PENDING_EVAL_LOCAL.mkdir(parents=True, exist_ok=True)
     ctrl = _ctrl_socket(alias)
     ssh_opt = (
-        f"ssh -o StrictHostKeyChecking=no"
-        f" -o ControlPath={ctrl} -o ControlMaster=no"
+        f"ssh -o ControlPath={ctrl} -o ControlMaster=no"
         + (" -v" if verbose else "")
     )
     include_args = []

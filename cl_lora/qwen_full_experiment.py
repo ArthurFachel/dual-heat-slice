@@ -35,7 +35,7 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
+
     Trainer,
     TrainingArguments,
 )
@@ -45,11 +45,13 @@ try:
     from .cl_methods import build_cl_method
     from .repro import set_global_seed
     from .train import _CLAuxLossTrainer
+    from .load_dataset import CompletionOnlyDataCollator
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from cl_lora.cl_methods import build_cl_method
     from cl_lora.repro import set_global_seed
     from cl_lora.train import _CLAuxLossTrainer
+    from cl_lora.load_dataset import CompletionOnlyDataCollator
 
 from .qwen_tasks import QWEN_CL_TASKS, QwenTask, build_qwen_dataset, make_prompt
 
@@ -72,17 +74,15 @@ def load_qwen_model(
     """
     if torch_dtype is None:
         import torch.cuda as cu
-        if cu.is_available():
-            cc = cu.get_device_capability(0)
-            major = cc[0]
-        else:
-            major = 99
-        if major < 7:
-            torch_dtype = torch.float16
-            print(f"[load_qwen_model] GPU CC={major}.x -> using float16")
-        else:
+        if not cu.is_available():
+            torch_dtype = torch.float32
+            print("[load_qwen_model] CPU -> using float32")
+        elif cu.is_bf16_supported():
             torch_dtype = torch.bfloat16
-            print(f"[load_qwen_model] GPU CC={major}.x -> using bfloat16")
+            print("[load_qwen_model] native bf16 supported -> using bfloat16")
+        else:
+            torch_dtype = torch.float16
+            print("[load_qwen_model] native bf16 unavailable -> using float16")
 
     kwargs = dict(torch_dtype=torch_dtype)
     if device_map is not None:
@@ -105,12 +105,35 @@ def load_qwen_tokenizer(model_name: str = QWEN_MODEL):
     return tokenizer
 
 
+def _training_precision() -> dict[str, bool]:
+    """Resolve Trainer precision without assuming CC 7.x supports bf16."""
+    if not torch.cuda.is_available():
+        return {"bf16": False, "fp16": False, "use_cpu": True}
+    use_bf16 = bool(torch.cuda.is_bf16_supported())
+    return {"bf16": use_bf16, "fp16": not use_bf16, "use_cpu": False}
+
+
 # ── Tokenization ──────────────────────────────────────────────────────────
 
 def tokenize_dataset(dataset: HFDataset, tokenizer, max_length: int = 128):
+    def _tokenize(ex):
+        prompt_ids = list(tokenizer(ex["prompt"], add_special_tokens=False)["input_ids"])
+        completion_ids = list(tokenizer(ex["target"], add_special_tokens=False)["input_ids"])
+        if not completion_ids:
+            raise ValueError("completion tokenization produced no supervised tokens")
+        completion_ids = completion_ids[:max_length]
+        prompt_budget = max(0, max_length - len(completion_ids))
+        prompt_ids = prompt_ids[-prompt_budget:] if prompt_budget else []
+        input_ids = prompt_ids + completion_ids
+        return {
+            "input_ids": input_ids,
+            "attention_mask": [1] * len(input_ids),
+            "prompt_length": len(prompt_ids),
+        }
+
     return dataset.map(
-        lambda ex: tokenizer(ex["text"], truncation=True, max_length=max_length),
-        remove_columns=[c for c in dataset.column_names if c != "target"],
+        _tokenize,
+        remove_columns=dataset.column_names,
     )
 
 
@@ -227,14 +250,7 @@ def train_one_task(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    import torch.cuda as cu
-    if cu.is_available():
-        gpu_major = cu.get_device_capability(0)[0]
-        use_fp16 = gpu_major < 7
-        use_cpu = False
-    else:
-        use_fp16 = False
-        use_cpu = True
+    precision = _training_precision()
 
     training_args = TrainingArguments(
         output_dir=str(output_path),
@@ -247,17 +263,17 @@ def train_one_task(
         warmup_ratio=0.01,
         eval_strategy="no",
         save_strategy="no",
-        bf16=not use_fp16 and not use_cpu,
-        fp16=use_fp16,
-        use_cpu=use_cpu,
+        bf16=precision["bf16"],
+        fp16=precision["fp16"],
+        use_cpu=precision["use_cpu"],
         report_to="none",
-        remove_unused_columns=True,
+        remove_unused_columns=False,
         seed=seed,
         dataloader_num_workers=0,
         ddp_find_unused_parameters=False,
     )
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = CompletionOnlyDataCollator(tokenizer)
 
     trainer = _CLAuxLossTrainer(
         model=model,

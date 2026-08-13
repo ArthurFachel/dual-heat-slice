@@ -66,9 +66,23 @@ def _import_lm_eval_modules():
     return lm_eval, hflm_module.HFLM
 
 
-def _build_hflm(model, tokenizer, device: str = "cuda", dtype: str = "float16"):
+def _resolve_eval_runtime() -> tuple[str, str]:
+    if not torch.cuda.is_available():
+        return "cpu", "float32"
+    if torch.cuda.is_bf16_supported():
+        return "cuda", "bfloat16"
+    return "cuda", "float16"
+
+
+def _build_hflm(model, tokenizer, device: str | None = None, dtype: str | None = None):
+    default_device, default_dtype = _resolve_eval_runtime()
     _, hflm_cls = _import_lm_eval_modules()
-    return hflm_cls(pretrained=model, tokenizer=tokenizer, device=device, dtype=dtype)
+    return hflm_cls(
+        pretrained=model,
+        tokenizer=tokenizer,
+        device=device or default_device,
+        dtype=dtype or default_dtype,
+    )
 
 
 @contextlib.contextmanager
@@ -502,8 +516,8 @@ def evaluate_general_tasks(
     tokenizer,
     eval_task_keys: list[str] | None = None,
     batch_size: int = 8,
-    device: str = "cuda",
-    dtype: str = "float16",
+    device: str | None = None,
+    dtype: str | None = None,
     alpaca_n_samples: int = 190,
     alpaca_max_new_tokens: int = 128,
     seed: int = 42,
@@ -751,6 +765,8 @@ def evaluate_all(
     return {
         "general": general,
         "seen_tasks": seen,
+        "evaluation_mode": "quick_perplexity" if quick_eval else "canonical_generation",
+        "metrics_eligible": not quick_eval,
     }
 
 
@@ -764,11 +780,12 @@ def main() -> None:
     args = parser.parse_args()
 
     lm_eval, hflm_cls = _import_lm_eval_modules()
+    device, dtype = _resolve_eval_runtime()
     model = hflm_cls(
         pretrained=args.model,
         peft=args.peft,
-        device="cuda",
-        dtype="float16",
+        device=device,
+        dtype=dtype,
     )
     gp_raw = lm_eval.simple_evaluate(
         model=model,
